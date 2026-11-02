@@ -188,9 +188,9 @@ python3.11 -m venv .venv-fb && source .venv-fb/bin/activate
 pip install -r fiestaboard-core/requirements.txt pytest pytest-cov
 
 mkdir -p plugins && touch plugins/__init__.py
-ln -s ../fiestaboard-plugin--f1-live-standings plugins/f1
+ln -s ../fiestaboard-plugin--f1 plugins/f1
 
-cd fiestaboard-plugin--f1-live-standings
+cd fiestaboard-plugin--f1
 PYTHONPATH="$(cd .. && pwd):$(cd ../fiestaboard-core && pwd)" \
 BOARD_READ_WRITE_KEY=test_key \
 python -m pytest tests/ -v --cov --cov-report=term-missing

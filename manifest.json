@@ -6,7 +6,7 @@
   "author": "Alvin To",
   "icon": "trophy",
   "category": "sports",
-  "repository": "https://github.com/Fiestaboard/fiestaboard-plugin--f1-live-standings",
+  "repository": "https://github.com/Fiestaboard/fiestaboard-plugin--f1",
   "documentation": "README.md",
   "live_data": true,
   "settings_schema": {
