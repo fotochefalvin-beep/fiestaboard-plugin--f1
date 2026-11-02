@@ -4,8 +4,9 @@
     python -m sidecar replay --from-dir fixtures/ [--print]
 
 - Downloads the archived topic streams of the race
-  (`https://livetiming.formula1.com<api_path><Topic>.jsonStream`) with the F1
-  token (F1_USERNAME[_FILE]/F1_PASSWORD[_FILE], as the live sidecar), or
+  (`https://livetiming.formula1.com<api_path><Topic>.jsonStream`) through
+  FastF1's signed-in session (F1_USERNAME[_FILE]/F1_PASSWORD[_FILE], as the
+  live sidecar), falling back to FastF1's mirror like FastF1 does, or
   reads `<Topic>.jsonStream` files from `--from-dir`. `<gp>` is a round
   number or a name FastF1 understands (`Brazil`, `Sao Paulo`).
 - Merges the streams by timestamp and feeds them to `RaceState` at
@@ -38,7 +39,6 @@ from .state import RaceState
 
 log = logging.getLogger("sidecar.replay")
 
-BASE_URL = "https://livetiming.formula1.com"
 TOPICS = ("SessionStatus", "DriverList", "LapCount", "TrackStatus", "TimingData")
 TIMEOUT_S = 30.0
 
@@ -91,15 +91,30 @@ def api_path(year: int, gp: str) -> str:
     return fastf1.get_session(year, event, "R").api_path
 
 
-def download(path: str, token: str, session: requests.Session) -> dict[str, list[tuple[float, Any]]]:
+def fastf1_get(urls: list[str]) -> Any:
+    """GET through FastF1's own session, as `fastf1.get_session(...).load()` does.
+
+    That session adds the F1 token (and signs in again on a 401) and sends
+    FastF1's livetiming headers; a hand-made request with only the token was
+    answered 403. FastF1's HTTP cache is bypassed, so nothing is written to
+    disk.
+    """
+    from fastf1 import _api
+    from fastf1.req import Cache
+
+    with Cache.disabled():
+        return Cache.requests_get(urls, headers=_api.headers, timeout=TIMEOUT_S)
+
+
+def download(path: str, get: Callable[[list[str]], Any] | None = None) -> dict[str, list[tuple[float, Any]]]:
+    """Each topic's archived stream, from F1 or FastF1's mirror (FastF1's order)."""
+    from fastf1 import _api
+
+    get = get or fastf1_get
     streams = {}
     for topic in TOPICS:
-        response = session.get(
-            f"{BASE_URL}{path}{topic}.jsonStream",
-            headers={"Authorization": f"Bearer {token}"},
-            timeout=TIMEOUT_S,
-            allow_redirects=False,
-        )
+        name = f"{path}{topic}.jsonStream"
+        response = get([f"{_api.base_url}{name}", f"{_api.base_url_mirror}{name}"])
         if response.status_code != 200:
             raise RuntimeError(f"{topic}: HTTP {response.status_code}")
         streams[topic] = parse_stream(response.content.decode("utf-8-sig"))
@@ -202,7 +217,8 @@ def main(argv: list[str] | None = None) -> int:
             live.configure_auth(*load_credentials())
             path = args.path or api_path(args.year, args.gp)
             log.info("replay: %s", path)
-            streams = download(path, live.archive_token(), session)
+            live.archive_token()  # sign in up front: a bad password fails here, clearly
+            streams = download(path)
     except ConfigError as exc:
         log.error("config error: %s", exc)
         return 2

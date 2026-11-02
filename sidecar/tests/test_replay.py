@@ -177,7 +177,7 @@ def test_main_errors(monkeypatch, capsys):
 
 
 def test_main_download(monkeypatch, capsys):
-    """year/gp: credentials -> token -> authenticated download of each topic."""
+    """year/gp: credentials -> sign-in -> each topic through FastF1's session, mirror second."""
     from sidecar import live
 
     monkeypatch.setenv("F1_USERNAME", "me@example.com")
@@ -191,15 +191,34 @@ def test_main_download(monkeypatch, capsys):
             self.status_code = 200
             self.content = (FIXTURE / f"{topic}.jsonStream").read_bytes()
 
-    def get(self, url, headers=None, timeout=None, allow_redirects=True):
-        gets.append((url, headers, allow_redirects))
-        return Resp(url.rsplit("/", 1)[1].removesuffix(".jsonStream"))
+    def get(urls):
+        gets.append(urls)
+        return Resp(urls[0].rsplit("/", 1)[1].removesuffix(".jsonStream"))
 
-    monkeypatch.setattr("requests.Session.get", get)
+    monkeypatch.setattr(replay_mod, "fastf1_get", get)
     assert replay_mod.main(["2026", "Brazil", "--print", "--samples", "2"]) == 0
-    assert gets[0][0] == "https://livetiming.formula1.com/static/2026/Brazil/SessionStatus.jsonStream"
-    assert all(h == {"Authorization": "Bearer tok"} and not redirects for _, h, redirects in gets)
+    assert gets[0] == [
+        "https://livetiming.formula1.com/static/2026/Brazil/SessionStatus.jsonStream",
+        "https://livetiming-mirror.fastf1.dev/static/2026/Brazil/SessionStatus.jsonStream",
+    ]
     assert "lap   2 end: VER HAM LEC PIA HUL NOR" in capsys.readouterr().out
+
+
+def test_fastf1_get_uses_fastf1_session_without_cache(monkeypatch):
+    """FastF1's session (token adapter, livetiming headers); its HTTP cache bypassed."""
+    from fastf1 import _api
+    from fastf1.req import Cache
+
+    seen = {}
+
+    def requests_get(urls, **kwargs):
+        seen.update(urls=urls, disabled=Cache._http_tmp_disabled, **kwargs)
+        return "resp"
+
+    monkeypatch.setattr(Cache, "requests_get", requests_get)
+    assert replay_mod.fastf1_get(["u1", "u2"]) == "resp"
+    assert seen["urls"] == ["u1", "u2"] and seen["headers"] == _api.headers
+    assert seen["disabled"] is True and Cache._http_tmp_disabled is False
 
 
 def test_main_download_failure(monkeypatch):
@@ -212,7 +231,7 @@ def test_main_download_failure(monkeypatch):
     class Resp:
         status_code = 403
 
-    monkeypatch.setattr("requests.Session.get", lambda self, url, **kw: Resp())
+    monkeypatch.setattr(replay_mod, "fastf1_get", lambda urls: Resp())
     assert replay_mod.main(["--path", "/static/x/", "--print"]) == 1
 
     def fail():
