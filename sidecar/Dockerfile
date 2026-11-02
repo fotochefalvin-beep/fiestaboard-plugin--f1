@@ -51,12 +51,15 @@ COPY sidecar/sidecar ./sidecar
 # Read-only root filesystem: no .pyc writes; the heartbeat, FastF1's cache
 # and matplotlib's config live on the /tmp tmpfs. The F1 token lives under
 # XDG_DATA_HOME=/data (a named volume, so restarts don't sign in again).
+# FastF1 ignores XDG_CACHE_HOME and defaults to ~/.fastf1, but the sidecar
+# user has no home (/nonexistent): FASTF1_CACHE points it at the tmpfs.
 ENV PATH=/app/sidecar/.venv/bin:${PATH} \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HEARTBEAT_FILE=/tmp/heartbeat \
     XDG_DATA_HOME=/data \
     XDG_CACHE_HOME=/tmp/cache \
+    FASTF1_CACHE=/tmp/fastf1 \
     MPLCONFIGDIR=/tmp/matplotlib \
     FASTF1_AUTH_METHOD=password
 
