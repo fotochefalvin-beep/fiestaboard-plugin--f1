@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  plugin:
+    name: FiestaBoard plugin
+    runs-on: ubuntu-latest
+    steps:
+      # The plugin repo and FiestaBoard core are checked out side by side, so
+      # the host's install check scans only this repo's tree (a core checkout
+      # inside it would bring its own requirements.txt and sources along).
+      - uses: actions/checkout@v4
+        with:
+          path: f1
+      - uses: actions/checkout@v4
+        with:
+          repository: Fiestaboard/FiestaBoard
+          # Pinned to the release this plugin was verified
+          # against (v9.13.0 = 519dd1d). Bump deliberately.
+          ref: v9.13.0
+          path: fiestaboard-core
+      - name: Verify host pin
+        run: |
+          test "$(git -C fiestaboard-core rev-parse --short=7 HEAD)" = "519dd1d" \
+            || { echo "v9.13.0 no longer points at 519dd1d"; exit 1; }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: |
+          pip install -r fiestaboard-core/requirements.txt
+          pip install pytest pytest-cov
+      - name: Validate manifest
+        run: |
+          python -c "
+          import json, sys
+          sys.path.insert(0, 'fiestaboard-core')
+          from src.plugins.manifest import validate_manifest
+          with open('f1/manifest.json') as f:
+              m = json.load(f)
+          ok, errors = validate_manifest(m)
+          if not ok:
+              print('manifest.json is INVALID:')
+              for e in errors:
+                  print(' -', e)
+              sys.exit(1)
+          print('manifest.json is valid')
+          "
+      - name: Host install check
+        run: |
+          python -c "
+          import json, sys
+          sys.path.insert(0, 'fiestaboard-core')
+          from pathlib import Path
+          from src.plugins.install_check import validate_install
+          from src.plugins.manifest import PluginManifest
+          plugin_dir = Path('f1').resolve()
+          m = json.loads((plugin_dir / 'manifest.json').read_text())
+          result = validate_install(m['id'], plugin_dir, PluginManifest.from_dict(m))
+          for w in result.warnings:
+              print('warning:', w)
+          if not result.ok:
+              for e in result.errors:
+                  print('error:', e)
+              sys.exit(1)
+          print('install check passed')
+          "
+      - name: Set up plugin directory structure
+        run: |
+          PLUGIN_ID=$(python -c "import json; print(json.load(open('f1/manifest.json'))['id'])")
+          test "$PLUGIN_ID" = "f1"
+          mkdir -p plugins
+          touch plugins/__init__.py
+          ln -s ../f1 "plugins/$PLUGIN_ID"
+      - name: Run plugin tests
+        working-directory: f1
+        env:
+          PYTHONPATH: "${{ github.workspace }}:${{ github.workspace }}/fiestaboard-core"
+          BOARD_READ_WRITE_KEY: test_key
+        # Coverage is measured on the plugin package only (.coveragerc:
+        # __init__.py and jolpica.py, tests/ omitted; fail under 80%).
+        # No test touches the network: HTTP is faked.
+        run: pytest tests/ -v --cov --cov-report=term-missing

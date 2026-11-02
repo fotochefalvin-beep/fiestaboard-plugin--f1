@@ -1,0 +1,9 @@
+# Plugin coverage only: the plugin package (__init__.py, jolpica.py).
+[run]
+source = plugins.f1
+omit =
+    */tests/*
+
+[report]
+fail_under = 80
+show_missing = true

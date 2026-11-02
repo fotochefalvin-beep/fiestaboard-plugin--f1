@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.env
+.env.local
+*.egg-info/
+dist/
+build/
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Virtualenvs
+.venv/
+.venv-fb/
+
+# Secrets -- none needed yet (Jolpica has no key); never commit any
+secrets/

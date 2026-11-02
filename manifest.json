@@ -1,0 +1,73 @@
+{
+  "id": "f1",
+  "name": "F1 Live Standings",
+  "version": "0.1.0",
+  "description": "Formula 1 on the board: the driver championship and the next Grand Prix (BRAZILIAN / SUN 18:00), from Jolpica. Build your own layout from the variables.",
+  "author": "Alvin To",
+  "icon": "trophy",
+  "category": "sports",
+  "repository": "https://github.com/Fiestaboard/fiestaboard-plugin--f1-live-standings",
+  "documentation": "README.md",
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "title": "Enabled",
+        "default": false
+      }
+    }
+  },
+  "variables": {
+    "groups": {
+      "race": {
+        "label": "Race"
+      }
+    },
+    "simple": {
+      "race_status": {
+        "description": "NEXT RACE between races (LIVE, FINISHED and NO DATA come with the live grid)",
+        "type": "string",
+        "max_length": 15,
+        "group": "race",
+        "example": "NEXT RACE"
+      },
+      "next_race": {
+        "description": "Next Grand Prix, short name (empty when the season is over)",
+        "type": "string",
+        "max_length": 15,
+        "group": "race",
+        "example": "MEXICO CITY"
+      },
+      "next_race_time": {
+        "description": "Start of the next Grand Prix in FiestaBoard's timezone (empty when the season is over)",
+        "type": "string",
+        "max_length": 15,
+        "group": "race",
+        "example": "SUN 21:00"
+      }
+    },
+    "arrays": {
+      "standings": {
+        "label_field": "code",
+        "item_fields": [
+          "position",
+          "code",
+          "name",
+          "points",
+          "wins"
+        ]
+      }
+    }
+  },
+  "max_lengths": {
+    "race_status": 15,
+    "next_race": 15,
+    "next_race_time": 15,
+    "standings.*.position": 15,
+    "standings.*.code": 15,
+    "standings.*.name": 15,
+    "standings.*.points": 15,
+    "standings.*.wins": 15
+  }
+}
