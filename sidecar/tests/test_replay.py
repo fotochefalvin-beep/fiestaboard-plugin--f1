@@ -24,11 +24,20 @@ def codes(snapshot, n=None):
 
 def test_parse_timestamp():
     assert parse_timestamp("01:02:03.456") == pytest.approx(3723.456)
+    assert parse_timestamp("1.01:02:03.456") == pytest.approx(86400 + 3723.456)
+    with pytest.raises(ValueError):
+        parse_timestamp("1:2:3")
 
 
 def test_parse_stream_skips_bad_lines():
     text = '﻿00:00:01.000{"a":1}\r\n00:00:02.000{bad\r\nshort\r\n00:00:03.000{"b":2}\r\n'
     assert parse_stream(text) == [(1.0, {"a": 1}), (3.0, {"b": 2})]
+
+
+def test_parse_stream_day_prefixed_timestamps():
+    """Archives longer than 24 h write `1.01:46:26.209` (seen in 2026 Mexico)."""
+    text = '00:10:18.756{"a":1}\r\n1.01:46:26.209{"b":2}\r\n'
+    assert parse_stream(text) == [(618.756, {"a": 1}), (pytest.approx(92786.209), {"b": 2})]
 
 
 def test_merge_orders_by_time_then_topic():
@@ -197,10 +206,7 @@ def test_main_download(monkeypatch, capsys):
 
     monkeypatch.setattr(replay_mod, "fastf1_get", get)
     assert replay_mod.main(["2026", "Brazil", "--print", "--samples", "2"]) == 0
-    assert gets[0] == [
-        "https://livetiming.formula1.com/static/2026/Brazil/SessionStatus.jsonStream",
-        "https://livetiming-mirror.fastf1.dev/static/2026/Brazil/SessionStatus.jsonStream",
-    ]
+    assert gets[0] == ["https://livetiming.formula1.com/static/2026/Brazil/SessionStatus.jsonStream"]
     assert "lap   2 end: VER HAM LEC PIA HUL NOR" in capsys.readouterr().out
 
 
@@ -233,6 +239,15 @@ def test_main_download_failure(monkeypatch):
 
     monkeypatch.setattr(replay_mod, "fastf1_get", lambda urls: Resp())
     assert replay_mod.main(["--path", "/static/x/", "--print"]) == 1
+    with pytest.raises(RuntimeError, match="livetiming.formula1.com HTTP 403, livetiming-mirror.fastf1.dev HTTP 403"):
+        replay_mod.download("/static/x/", lambda urls: Resp())
+
+    class Mirror:
+        def __init__(self, url):
+            self.status_code = 403 if "formula1.com" in url else 200
+            self.content = b""
+
+    assert replay_mod.download("/static/x/", lambda urls: Mirror(urls[0]))["SessionStatus"] == []
 
     def fail():
         raise live.AuthError("bad password")

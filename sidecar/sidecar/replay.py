@@ -27,6 +27,7 @@ import argparse
 import heapq
 import json
 import logging
+import re
 import sys
 import time
 from collections.abc import Callable, Iterable, Iterator
@@ -43,21 +44,31 @@ TOPICS = ("SessionStatus", "DriverList", "LapCount", "TrackStatus", "TimingData"
 TIMEOUT_S = 30.0
 
 
+TIMESTAMP = re.compile(r"(?:(\d+)\.)?(\d\d):(\d\d):(\d\d\.\d+)")
+
+
 def parse_timestamp(text: str) -> float:
-    """`01:02:03.456` -> 3723.456 seconds."""
-    hours, minutes, seconds = text.split(":")
-    return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+    """`01:02:03.456` -> 3723.456 seconds; `1.01:02:03.456` adds a day.
+
+    Streams recorded for over 24 h (the archive starts well before the race)
+    prefix the day count.
+    """
+    match = TIMESTAMP.fullmatch(text)
+    if match is None:
+        raise ValueError(f"bad timestamp: {text!r}")
+    days, hours, minutes, seconds = match.groups()
+    return int(days or 0) * 86400 + int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
 
 def parse_stream(text: str) -> list[tuple[float, Any]]:
     """An archived `.jsonStream` -> [(seconds, message)]; bad lines skipped."""
     records = []
     for line in text.lstrip("﻿").splitlines():
-        line = line.strip()
-        if len(line) < 13:
+        match = TIMESTAMP.match(line.strip())
+        if match is None:
             continue
         try:
-            records.append((parse_timestamp(line[:12]), json.loads(line[12:])))
+            records.append((parse_timestamp(match.group()), json.loads(line.strip()[match.end():])))
         except (ValueError, json.JSONDecodeError):
             continue
     return records
@@ -114,9 +125,15 @@ def download(path: str, get: Callable[[list[str]], Any] | None = None) -> dict[s
     streams = {}
     for topic in TOPICS:
         name = f"{path}{topic}.jsonStream"
-        response = get([f"{_api.base_url}{name}", f"{_api.base_url_mirror}{name}"])
-        if response.status_code != 200:
-            raise RuntimeError(f"{topic}: HTTP {response.status_code}")
+        # One URL per call, so a failure names F1's status, not only the mirror's.
+        failures = []
+        for url in (f"{_api.base_url}{name}", f"{_api.base_url_mirror}{name}"):
+            response = get([url])
+            if response.status_code == 200:
+                break
+            failures.append(f"{url.split('/')[2]} HTTP {response.status_code}")
+        else:
+            raise RuntimeError(f"{topic}: {', '.join(failures)}")
         streams[topic] = parse_stream(response.content.decode("utf-8-sig"))
         log.info("replay: %s %d message(s)", topic, len(streams[topic]))
     return streams
