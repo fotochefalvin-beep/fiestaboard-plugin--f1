@@ -111,6 +111,7 @@ class Sidecar:
         self.state_key: str | None = None
         self.lock = threading.Lock()
         self._prewarm_retry: dict[str, float] = {}
+        self._signin_retry: dict[str, float] = {}
         self._announced: str | None = None
 
     # ── sign-in ──────────────────────────────────────────────────────────
@@ -155,8 +156,14 @@ class Sidecar:
         # Window open.
         if race.key != self.state_key:
             self.state, self.state_key = RaceState(), race.key
+        clock = self.clock()
+        retry_at = self._signin_retry.get(race.key, float("-inf"))
+        if clock < retry_at:
+            return retry_at - clock  # failed sign-in: wait the full 5 min
         if not self._signed_in(race):
+            self._signin_retry[race.key] = clock + SIGNIN_RETRY_S
             return SIGNIN_RETRY_S
+        self._signin_retry.pop(race.key, None)
         outcome = self.follow(race)
         if outcome in ("finished", "cap"):
             self.done.add(race.key)
@@ -215,7 +222,11 @@ class Sidecar:
 
 def connect_feed(on_topic: Callable[[str, Any], None]) -> Any:
     client = live.make_client(on_topic)
-    client.connect()
+    try:
+        client.connect()
+    except BaseException:
+        client.close()  # stop a half-started signalrcore connection
+        raise
     return client
 
 

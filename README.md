@@ -140,7 +140,9 @@ cp secrets/f1_password.example secrets/f1_password
 cp secrets/fiestaboard_api_token.example secrets/fiestaboard_api_token
 # Edit the three files: replace the YOUR_... placeholder with the real value
 # (F1 account email, password, a FiestaBoard API token). One line each.
-chmod 600 secrets/*
+# The container reads them as uid 10001 (compose file secrets keep host
+# owner/mode); the folder itself stays private.
+chmod 700 secrets && chmod 644 secrets/*
 docker compose -f docker-compose.sidecar.yml up -d --build
 docker logs -f f1-live-standings-sidecar
 ```

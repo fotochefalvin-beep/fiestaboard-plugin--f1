@@ -634,3 +634,38 @@ def test_connect_feed_uses_live_client(monkeypatch):
     monkeypatch.setattr(live, "make_client", lambda on_topic: Client())
     assert isinstance(main_mod.connect_feed(lambda t, d: None), Client)
     assert made == ["connected"]
+
+
+def test_failed_sign_in_in_window_not_retried_before_5_min():
+    """run() wakes every 30 s; sign-in must still wait the full 5 minutes."""
+    t = Time(START + timedelta(minutes=10))
+    calls = []
+
+    def sign_in(force=False):
+        calls.append(t.clock())
+        raise live.AuthError("Sign-in failed: wrong password")
+
+    sidecar, _, _ = make_sidecar(t, sign_in=sign_in)
+    for _ in range(21):  # 10 min 30 s, steps 30 s apart
+        sidecar.step()
+        t.sleep(main_mod.MAX_SLEEP_S)
+    assert len(calls) == 3
+    assert calls[1] - calls[0] == main_mod.SIGNIN_RETRY_S
+    assert calls[2] - calls[1] == main_mod.SIGNIN_RETRY_S
+
+
+def test_connect_feed_closes_client_on_failure(monkeypatch):
+    class Client:
+        closed = False
+
+        def connect(self):
+            raise OSError("negotiate failed after start")
+
+        def close(self):
+            self.closed = True
+
+    client = Client()
+    monkeypatch.setattr(live, "make_client", lambda on_topic: client)
+    with pytest.raises(OSError):
+        main_mod.connect_feed(lambda t, d: None)
+    assert client.closed

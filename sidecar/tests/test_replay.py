@@ -220,3 +220,19 @@ def test_main_download_failure(monkeypatch):
 
     monkeypatch.setattr(live, "archive_token", fail)
     assert replay_mod.main(["--path", "/static/x/", "--print"]) == 1
+
+
+def test_main_other_value_errors_are_load_errors(monkeypatch, caplog):
+    from sidecar import live
+
+    monkeypatch.setenv("F1_USERNAME", "me@example.com")
+    monkeypatch.setenv("F1_PASSWORD", "pw")
+
+    def unknown(year, gp):
+        raise ValueError("no event named Atlantis")
+
+    monkeypatch.setattr(replay_mod, "api_path", unknown)
+    monkeypatch.setattr(live, "archive_token", lambda: "tok")
+    assert replay_mod.main(["2026", "Atlantis", "--print"]) == 1
+    assert "cannot load the race: no event named Atlantis" in caplog.text
+    assert "--samples" not in caplog.text

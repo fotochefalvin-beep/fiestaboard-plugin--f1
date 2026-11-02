@@ -185,9 +185,14 @@ def main(argv: list[str] | None = None) -> int:
     from .main import Pusher
     from .notify import Notifier
 
-    session = requests.Session()
     try:
         samples = [int(x) for x in args.samples.split(",") if x.strip()]
+    except ValueError:
+        log.error("--samples must be lap numbers, e.g. 1,20,71")
+        return 2
+
+    session = requests.Session()
+    try:
         push_config = None if args.print else load_push_config()
         if args.from_dir:
             streams = read_dir(args.from_dir)
@@ -201,10 +206,7 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         log.error("config error: %s", exc)
         return 2
-    except ValueError:
-        log.error("--samples must be lap numbers, e.g. 1,20,71")
-        return 2
-    except (live.AuthError, RuntimeError, requests.RequestException) as exc:
+    except (live.AuthError, RuntimeError, ValueError, requests.RequestException) as exc:
         log.error("replay: cannot load the race: %s", exc)
         return 1
 
