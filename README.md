@@ -172,6 +172,19 @@ at 20 x real time. `--from-dir DIR` reads `<Topic>.jsonStream` files instead
 of downloading (see `sidecar/tests/fixtures/mini_race`, a hand-made 3-lap
 race). Archived data is never written to disk.
 
+`--laps 44-45` (or `--laps 44`) plays only those laps on the board: the laps
+before are run through at once, without pushing, so the grid is right when
+lap 44 starts, and the replay stops when lap 45 ends (an END past the last
+lap plays to the finish). The whole race is still downloaded first, and it
+works with `--print` and `--samples`. On the Pi:
+
+```bash
+docker compose -f docker-compose.sidecar.yml run --rm f1-sidecar \
+  python -m sidecar replay 2026 Mexico --laps 44-45 --speed 1
+```
+
+The board then shows `NO DATA` after 60 s (the race never sent FINISHED).
+
 ## Development
 
 ### Plugin tests

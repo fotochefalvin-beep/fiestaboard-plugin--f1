@@ -1,6 +1,6 @@
 """Replay an archived Grand Prix through `RaceState` (develop and verify).
 
-    python -m sidecar replay <year> <gp> [--speed 20] [--print] [--samples 1,20]
+    python -m sidecar replay <year> <gp> [--speed 20] [--print] [--samples 1,20] [--laps 44-45]
     python -m sidecar replay --from-dir fixtures/ [--print]
 
 - Downloads the archived topic streams of the race
@@ -16,6 +16,11 @@
 - Pushes snapshots to FIESTABOARD_RECEIVE_URL like the live sidecar (on
   change, checked every second of wall time, heartbeat 10 s), unless
   `--print` is given: then nothing is pushed.
+- `--laps START-END` (or `--laps N`) plays only those laps: everything
+  before lap START goes into `RaceState` at once, without pushing or
+  waiting, so the grid is right when START begins; the replay stops when
+  lap END ends (the LapCount past END is not applied) and pushes its
+  last snapshot.
 - Prints the grid order at the end of each `--samples` lap, the final
   classification, and every lap / track status / session change summary,
   to compare with the official result.
@@ -38,7 +43,7 @@ from typing import Any, TextIO
 
 import requests
 
-from .state import RaceState
+from .state import RaceState, _int
 
 log = logging.getLogger("sidecar.replay")
 
@@ -145,6 +150,18 @@ def download(path: str, get: Callable[[list[str]], Any] | None = None) -> dict[s
     return streams
 
 
+def parse_laps(text: str) -> tuple[int, int]:
+    """`44-45` -> (44, 45); `44` -> (44, 44). Positive, START <= END."""
+    match = re.fullmatch(r"\s*(\d+)\s*(?:-\s*(\d+)\s*)?", text)
+    if match is None:
+        raise argparse.ArgumentTypeError(f"{text!r} is not START-END or N, e.g. 44-45")
+    start = int(match.group(1))
+    end = int(match.group(2) or start)
+    if start < 1 or end < start:
+        raise argparse.ArgumentTypeError(f"{text!r}: laps start at 1 and START <= END")
+    return start, end
+
+
 def order(snapshot: dict[str, Any] | None) -> str:
     if not snapshot:
         return "-"
@@ -156,16 +173,24 @@ def replay(
     *,
     speed: float = 0.0,
     samples: Iterable[int] = (),
+    laps: tuple[int, int] | None = None,
     push: Callable[[dict[str, Any], float], Any] | None = None,
     out: TextIO | None = None,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
 ) -> RaceState:
-    """Feed *events* to a fresh RaceState; print samples; push via *push*."""
+    """Feed *events* to a fresh RaceState; print samples; push via *push*.
+
+    With *laps* = (START, END), only laps START..END are paced and pushed.
+    """
     out = out or sys.stdout
     state = RaceState()
     wanted = set(samples)
     first_t: float | None = None
+    # Pacing starts here: the first message, or the first one of lap START.
+    pace_t: float | None = None
+    playing = laps is None
+    stopped = False
     started = clock()
     last_tick = float("-inf")
     summary: tuple[str, str, str] | None = None
@@ -176,7 +201,12 @@ def replay(
     snapshot: dict[str, Any] | None = None
     for t, topic, msg in events:
         if first_t is None:
-            first_t = t
+            first_t = pace_t = t
+        new_lap = (
+            _int(msg["CurrentLap"])
+            if topic == "LapCount" and isinstance(msg, dict) and "CurrentLap" in msg
+            else None
+        )
         # Measured from the latest time seen: an out-of-order message must
         # not make the same gap count twice.
         if latest_t is not None and t < latest_t:
@@ -185,8 +215,12 @@ def replay(
             skipped += t - latest_t - MAX_GAP_S
             log.info("replay: skipped %.0f s without messages at t=%.1f s", t - latest_t - MAX_GAP_S, t - first_t)
         latest_t = t if latest_t is None else max(latest_t, t)
-        if speed > 0:
-            target = (t - first_t - skipped) / speed
+        if not playing and new_lap is not None and laps[0] <= new_lap <= laps[1]:
+            playing = True
+            pace_t, skipped, started = t, 0.0, clock()
+            log.info("replay: lap %d reached at t=%.1f s, playing to lap %d", new_lap, t - first_t, laps[1])
+        if playing and speed > 0:
+            target = (t - pace_t - skipped) / speed
             delay = target - (clock() - started)
             while delay > 0:
                 # In slices, pushing meanwhile (the pusher sends a heartbeat
@@ -202,6 +236,9 @@ def replay(
             if ended in wanted and str(msg["CurrentLap"]) != state.lap:
                 print(f"lap {ended:>3} end: {order(state.snapshot())}", file=out)
                 wanted.discard(ended)
+        if laps is not None and new_lap is not None and new_lap > laps[1]:
+            stopped = True
+            break
         state.apply(topic, msg)
 
         snapshot = state.snapshot()
@@ -214,14 +251,18 @@ def replay(
                     file=out,
                 )
             summary = current
-            if push is not None and clock() - last_tick >= 1.0:
+            if playing and push is not None and clock() - last_tick >= 1.0:
                 push(snapshot, clock())
                 last_tick = clock()
 
     if backwards:
         log.info("replay: %d message(s) were older than one before them", backwards)
+    if not playing:
+        log.warning("replay: lap %d never reached, nothing played", laps[0])
+    elif stopped:
+        print(f"stopped after lap {laps[1]}", file=out)
     final = state.snapshot()
-    if push is not None and final is not None:
+    if playing and push is not None and final is not None:
         push(final, clock())
     print(f"final ({state.session}, lap {state.lap}/{state.total_laps}): {order(final)}", file=out)
     return state
@@ -235,6 +276,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--path", help="archive path (/static/...), instead of year/gp")
     parser.add_argument("--speed", type=float, default=0.0, help="x real time, 0 = no waiting")
     parser.add_argument("--samples", default="", help="laps to print the order at, e.g. 1,20,71")
+    parser.add_argument(
+        "--laps", type=parse_laps, help="play only these laps, e.g. 44-45 (earlier ones at once)"
+    )
     parser.add_argument("--print", action="store_true", help="only print, do not push")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -276,5 +320,5 @@ def main(argv: list[str] | None = None) -> int:
             Notifier(push_config.fiestaboard_receive_url, push_config.fiestaboard_api_token, session)
         )
         push = pusher.tick
-    replay(merge(streams), speed=args.speed, samples=samples, push=push)
+    replay(merge(streams), speed=args.speed, samples=samples, laps=args.laps, push=push)
     return 0

@@ -7,6 +7,7 @@ Official order at the end of lap 1: VER NOR LEC HAM PIA HUL; lap 2: VER HAM
 LEC PIA HUL NOR; classification: VER HAM PIA LEC NOR HUL.
 """
 
+import argparse
 import io
 from pathlib import Path
 
@@ -205,6 +206,78 @@ def test_pushes_while_waiting():
     gaps = [b - a for a, b in zip(quiet, quiet[1:])]
     assert len(quiet) >= 50
     assert max(gaps) <= replay_mod.SLEEP_SLICE_S + 1e-9
+
+
+def test_laps_window_paces_and_pushes_only_those_laps():
+    # Lap 2 of the mini race runs from t=100 s to t=200 s (LapCount 3).
+    now, clock, sleep = fake_time()
+    out = io.StringIO()
+    pushed = []
+    replay(
+        merge(read_dir(FIXTURE)),
+        speed=1,
+        samples=[2],
+        laps=(2, 2),
+        push=lambda snap, at: pushed.append(snap),
+        out=out,
+        sleep=sleep,
+        clock=clock,
+    )
+    # Lap 1 cost no wall time; lap 2 took its 100 s of race time.
+    assert now[0] == pytest.approx(100.0, abs=replay_mod.SLEEP_SLICE_S)
+    assert pushed and {s["lap"] for s in pushed} == {"2"}
+    assert "SC" in {s["track_status"] for s in pushed}
+    # The grid built during lap 1 is there from the first push.
+    assert codes(pushed[0], 3) == ["VER", "NOR", "LEC"]
+    assert codes(pushed[-1]) == ["VER", "HAM", "LEC", "PIA", "HUL", "NOR"]
+    text = out.getvalue()
+    assert "lap   2 end: VER HAM LEC PIA HUL NOR" in text
+    assert "stopped after lap 2" in text
+
+
+def test_laps_window_to_the_end_of_the_race():
+    pushed = []
+    out = io.StringIO()
+    replay(
+        merge(read_dir(FIXTURE)),
+        laps=(3, 9),
+        push=lambda snap, at: pushed.append(snap),
+        out=out,
+        clock=iter(range(0, 10**6, 2)).__next__,
+    )
+    assert pushed[0]["lap"] == "3"
+    assert pushed[-1]["session"] == "FINISHED"
+    assert "stopped after" not in out.getvalue()
+
+
+def test_laps_never_reached_pushes_nothing(caplog):
+    pushed = []
+    replay(
+        merge(read_dir(FIXTURE)),
+        speed=1,
+        laps=(5, 6),
+        push=lambda snap, at: pushed.append(snap),
+        out=io.StringIO(),
+        sleep=lambda s: pytest.fail("slept before lap 5"),
+    )
+    assert pushed == []
+    assert "lap 5 never reached" in caplog.text
+
+
+def test_parse_laps():
+    assert replay_mod.parse_laps("44-45") == (44, 45)
+    assert replay_mod.parse_laps(" 7 ") == (7, 7)
+    for bad in ("0-2", "45-44", "x", "1-", "-3", "1-2-3"):
+        with pytest.raises(argparse.ArgumentTypeError):
+            replay_mod.parse_laps(bad)
+
+
+def test_main_laps(capsys):
+    assert replay_mod.main(["--from-dir", str(FIXTURE), "--print", "--laps", "2-2"]) == 0
+    assert "stopped after lap 2" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as exc:
+        replay_mod.main(["--from-dir", str(FIXTURE), "--print", "--laps", "45-44"])
+    assert exc.value.code == 2
 
 
 def test_main_print_from_dir(capsys):
