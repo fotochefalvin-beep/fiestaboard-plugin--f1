@@ -1,0 +1,21 @@
+# Build context is the repo root (sidecar/Dockerfile). Keep secrets and local
+# artefacts out of it.
+secrets/
+.env
+.env.*
+!.env.example
+.venv
+**/.venv
+.git
+.github/
+tests/
+sidecar/tests/
+
+# Local caches and test artefacts
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+.coverage
+.coverage.*
+htmlcov/
+.DS_Store

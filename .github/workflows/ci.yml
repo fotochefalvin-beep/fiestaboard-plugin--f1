@@ -83,6 +83,21 @@ jobs:
           PYTHONPATH: "${{ github.workspace }}:${{ github.workspace }}/fiestaboard-core"
           BOARD_READ_WRITE_KEY: test_key
         # Coverage is measured on the plugin package only (.coveragerc:
-        # __init__.py and jolpica.py, tests/ omitted; fail under 80%).
+        # __init__.py and jolpica.py; tests/ and sidecar/ omitted; fail under 80%).
         # No test touches the network: HTTP is faked.
         run: pytest tests/ -v --cov --cov-report=term-missing
+
+  sidecar:
+    name: FastF1 sidecar
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sidecar
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.21"
+      # Hand-made fixtures only; no test touches the network or F1 servers.
+      - name: Run sidecar tests
+        run: uv run --locked pytest -v

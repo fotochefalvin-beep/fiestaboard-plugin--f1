@@ -1,0 +1,26 @@
+[project]
+name = "f1-live-standings-sidecar"
+version = "0.2.0"
+description = "FastF1 sidecar for the FiestaBoard F1 Live Standings plugin: F1 live timing around each Grand Prix -> race snapshots pushed to the plugin."
+requires-python = ">=3.14"
+license = "MIT"
+# The sidecar's dependencies live ONLY here (+ uv.lock). Never add a
+# requirements.txt anywhere in this repo -- FiestaBoard's install check scans
+# the whole tree for one.
+dependencies = [
+    "fastf1==3.9.0",
+    "requests>=2.32",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
+
+[tool.uv]
+# Not an installable package: run as `python -m sidecar` from this directory.
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

@@ -1,8 +1,10 @@
 # Plugin coverage only: the plugin package (__init__.py, jolpica.py).
+# The sidecar has its own tests (sidecar/, run with uv).
 [run]
 source = plugins.f1
 omit =
     */tests/*
+    */sidecar/*
 
 [report]
 fail_under = 80

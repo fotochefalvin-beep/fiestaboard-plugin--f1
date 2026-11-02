@@ -1,0 +1,83 @@
+# F1 Live Standings sidecar, next to FiestaBoard on the Pi.
+#
+#   docker compose -f docker-compose.sidecar.yml up -d --build
+#
+# Setup (secret files, .env): README.md, "Live grid: the sidecar".
+#
+# - Joins FiestaBoard's compose network (external) and pushes to FiestaBoard
+#   through its nginx: FIESTABOARD_RECEIVE_URL in .env.
+# - No ports: the sidecar only makes outgoing connections (Jolpica, F1 sign-in,
+#   F1 live timing, FiestaBoard).
+# - Secrets are mounted as files under /run/secrets and read via *_FILE;
+#   everything else comes from .env (gitignored; see .env.example).
+# - The F1 token is kept on the named volume f1-token (XDG_DATA_HOME), so a
+#   restart reuses it; the sidecar signs in again only when it has expired.
+
+name: f1-live-standings
+
+services:
+  f1-sidecar:
+    build:
+      context: .
+      dockerfile: sidecar/Dockerfile
+    image: f1-live-standings-sidecar:local
+    container_name: f1-live-standings-sidecar
+    restart: unless-stopped
+    # Tiny init as PID 1: forwards SIGTERM so `docker stop` doesn't wait 10 s.
+    init: true
+    env_file: .env
+    environment:
+      HEARTBEAT_FILE: /tmp/heartbeat
+      XDG_DATA_HOME: /data
+      F1_USERNAME_FILE: /run/secrets/f1_username
+      F1_PASSWORD_FILE: /run/secrets/f1_password
+      FIESTABOARD_API_TOKEN_FILE: /run/secrets/fiestaboard_api_token
+    secrets:
+      - f1_username
+      - f1_password
+      - fiestaboard_api_token
+    volumes:
+      - f1-token:/data
+    networks:
+      - fiestaboard
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cpus: 1
+    mem_limit: 512m
+    healthcheck:
+      # Unhealthy when the main loop hasn't touched the heartbeat for 60 s.
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os, sys, time; f = os.environ.get('HEARTBEAT_FILE', '/tmp/heartbeat'); sys.exit(0 if os.path.exists(f) and time.time() - os.path.getmtime(f) < 60 else 1)"
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 2
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  f1-token:
+
+secrets:
+  f1_username:
+    file: ./secrets/f1_username
+  f1_password:
+    file: ./secrets/f1_password
+  fiestaboard_api_token:
+    file: ./secrets/fiestaboard_api_token
+
+networks:
+  fiestaboard:
+    external: true
+    name: ${FIESTABOARD_NETWORK:-fiestaboard_default}

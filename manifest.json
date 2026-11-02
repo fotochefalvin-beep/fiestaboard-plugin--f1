@@ -1,13 +1,14 @@
 {
   "id": "f1",
   "name": "F1 Live Standings",
-  "version": "0.1.0",
-  "description": "Formula 1 on the board: the driver championship and the next Grand Prix (BRAZILIAN / SUN 18:00), from Jolpica. Build your own layout from the variables.",
+  "version": "0.2.0",
+  "description": "Formula 1 on the board: the live Grand Prix grid (pushed by the FastF1 sidecar), the driver championship and the next race (Jolpica). Build your own layout from the variables.",
   "author": "Alvin To",
   "icon": "trophy",
   "category": "sports",
   "repository": "https://github.com/Fiestaboard/fiestaboard-plugin--f1-live-standings",
   "documentation": "README.md",
+  "live_data": true,
   "settings_schema": {
     "type": "object",
     "properties": {
@@ -15,6 +16,14 @@
         "type": "boolean",
         "title": "Enabled",
         "default": false
+      },
+      "top_n": {
+        "type": "integer",
+        "title": "Top N",
+        "description": "The live grid on the board is refreshed when the order of the first N drivers changes (1-20). Lap and track status always update.",
+        "default": 3,
+        "minimum": 1,
+        "maximum": 20
       }
     }
   },
@@ -26,11 +35,32 @@
     },
     "simple": {
       "race_status": {
-        "description": "NEXT RACE between races (LIVE, FINISHED and NO DATA come with the live grid)",
+        "description": "LIVE during a Grand Prix, NO DATA when the live feed stops for 60 s, FINISHED for 2 h after the flag, else NEXT RACE",
         "type": "string",
         "max_length": 15,
         "group": "race",
-        "example": "NEXT RACE"
+        "example": "LIVE"
+      },
+      "lap": {
+        "description": "Current lap (last known during NO DATA; empty outside a race)",
+        "type": "string",
+        "max_length": 15,
+        "group": "race",
+        "example": "34"
+      },
+      "total_laps": {
+        "description": "Scheduled laps (empty outside a race)",
+        "type": "string",
+        "max_length": 15,
+        "group": "race",
+        "example": "57"
+      },
+      "track_status": {
+        "description": "GREEN, YELLOW, SC, VSC or RED (empty outside a race)",
+        "type": "string",
+        "max_length": 15,
+        "group": "race",
+        "example": "SC"
       },
       "next_race": {
         "description": "Next Grand Prix, short name (empty when the season is over)",
@@ -48,6 +78,19 @@
       }
     },
     "arrays": {
+      "grid": {
+        "label_field": "code",
+        "item_fields": [
+          "position",
+          "code",
+          "name",
+          "number",
+          "team",
+          "gap",
+          "interval",
+          "status"
+        ]
+      },
       "standings": {
         "label_field": "code",
         "item_fields": [
@@ -62,8 +105,19 @@
   },
   "max_lengths": {
     "race_status": 15,
+    "lap": 15,
+    "total_laps": 15,
+    "track_status": 15,
     "next_race": 15,
     "next_race_time": 15,
+    "grid.*.position": 15,
+    "grid.*.code": 15,
+    "grid.*.name": 15,
+    "grid.*.number": 15,
+    "grid.*.team": 15,
+    "grid.*.gap": 15,
+    "grid.*.interval": 15,
+    "grid.*.status": 15,
     "standings.*.position": 15,
     "standings.*.code": 15,
     "standings.*.name": 15,

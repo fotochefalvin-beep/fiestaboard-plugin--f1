@@ -1,0 +1,10 @@
+﻿00:00:00.080{"Lines":{"1":{"Position":"1","GapToLeader":"","IntervalToPositionAhead":{"Value":"","Catching":false},"InPit":false,"PitOut":false,"Retired":false,"Stopped":false},"4":{"Position":"2","GapToLeader":"+0.5","IntervalToPositionAhead":{"Value":"+0.5","Catching":false},"InPit":false,"PitOut":false,"Retired":false,"Stopped":false},"16":{"Position":"3","GapToLeader":"+1.0","IntervalToPositionAhead":{"Value":"+0.5","Catching":false},"InPit":false,"PitOut":false,"Retired":false,"Stopped":false},"44":{"Position":"4","GapToLeader":"+1.5","IntervalToPositionAhead":{"Value":"+0.5","Catching":false},"InPit":false,"PitOut":false,"Retired":false,"Stopped":false},"81":{"Position":"5","GapToLeader":"+2.0","IntervalToPositionAhead":{"Value":"+0.5","Catching":false},"InPit":false,"PitOut":false,"Retired":false,"Stopped":false},"27":{"Position":"6","GapToLeader":"+2.5","IntervalToPositionAhead":{"Value":"+0.5","Catching":false},"InPit":false,"PitOut":false,"Retired":false,"Stopped":false}},"Withheld":false}
+00:00:30.000{"Lines":{"1":{"GapToLeader":"LAP 1","IntervalToPositionAhead":{"Value":"LAP 1"}},"4":{"GapToLeader":"+1.234","IntervalToPositionAhead":{"Value":"+1.234"}},"16":{"GapToLeader":"+18.432"}}}
+00:01:00.000{"Lines":{"27":{"Retired":true,"Stopped":true}}}
+00:01:50.000{"Lines":{"44":{"Position":"3","GapToLeader":"+17.9"},"16":{"Position":"4","GapToLeader":"+18.0"}}}
+00:02:05.000{"Lines":{"4":{"InPit":true}}}
+00:02:10.000{"Lines":{"4":{"Position":"6","GapToLeader":"1L","IntervalToPositionAhead":{"Value":"1L"}},"44":{"Position":"2"},"16":{"Position":"3"},"81":{"Position":"4"},"27":{"Position":"5"}}}
+00:02:20.000{"Lines":{"4":{"InPit":false,"PitOut":true}}}
+00:02:25.000{"Lines":{"4":{"PitOut":false}}}
+00:03:40.000{"Lines":{"81":{"Position":"3"},"16":{"Position":"4"}}}
+00:04:00.000{"Lines":{"27":{"Position":"6"},"4":{"Position":"5","GapToLeader":"3 LAPS"}}}

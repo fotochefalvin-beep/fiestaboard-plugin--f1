@@ -55,9 +55,16 @@ def test_manifest_install_check_passes(manifest):
 
 def test_manifest_declares_variables(manifest):
     assert manifest["id"] == "f1"
-    assert manifest["version"] == "0.1.0"
-    assert set(manifest["settings_schema"]["properties"]) == {"enabled"}
-    assert set(manifest["variables"]["simple"]) == {"race_status", "next_race", "next_race_time"}
+    assert manifest["version"] == "0.2.0"
+    assert set(manifest["settings_schema"]["properties"]) == {"enabled", "top_n"}
+    assert set(manifest["variables"]["simple"]) == {
+        "race_status",
+        "lap",
+        "total_laps",
+        "track_status",
+        "next_race",
+        "next_race_time",
+    }
     array = manifest["variables"]["arrays"]["standings"]
     assert array["label_field"] == "code"
     assert array["item_fields"] == ["position", "code", "name", "points", "wins"]

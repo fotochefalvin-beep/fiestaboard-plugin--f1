@@ -1,0 +1,6 @@
+﻿00:00:00.100{"Status":"Inactive"}
+00:00:10.000{"Status":"Started"}
+00:02:30.000{"Status":"Aborted"}
+00:02:40.000{"Status":"Started"}
+00:05:00.000{"Status":"Finished"}
+00:05:30.000{"Status":"Finalised"}

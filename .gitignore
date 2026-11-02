@@ -29,5 +29,7 @@ Thumbs.db
 .venv/
 .venv-fb/
 
-# Secrets -- none needed yet (Jolpica has no key); never commit any
-secrets/
+# Secrets (F1 account, FiestaBoard token) -- never commit; only the
+# YOUR_... placeholder examples are tracked.
+secrets/*
+!secrets/*.example

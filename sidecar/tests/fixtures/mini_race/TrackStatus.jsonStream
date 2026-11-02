@@ -1,0 +1,7 @@
+﻿00:00:00.070{"Status":"1","Message":"AllClear"}
+00:02:00.000{"Status":"4","Message":"SCDeployed"}
+00:02:30.000{"Status":"5","Message":"Red"}
+00:02:45.000{"Status":"6","Message":"VSCDeployed"}
+00:02:55.000{"Status":"7","Message":"VSCEnding"}
+00:03:00.000{"Status":"1","Message":"AllClear"}
+00:03:10.000{"Status":"3","Message":"Unknown"}
