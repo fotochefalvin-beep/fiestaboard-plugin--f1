@@ -10,7 +10,9 @@
   reads `<Topic>.jsonStream` files from `--from-dir`. `<gp>` is a round
   number or a name FastF1 understands (`Brazil`, `Sao Paulo`).
 - Merges the streams by timestamp and feeds them to `RaceState` at
-  `--speed` x real time (0 = as fast as possible).
+  `--speed` x real time (0 = as fast as possible). A silence of more than
+  MAX_GAP_S in the archive (it opens a day or more before the race) is cut
+  short, so a timed replay reaches the start within a minute.
 - Pushes snapshots to FIESTABOARD_RECEIVE_URL like the live sidecar (on
   change, checked every second of wall time, heartbeat 10 s), unless
   `--print` is given: then nothing is pushed.
@@ -42,6 +44,10 @@ log = logging.getLogger("sidecar.replay")
 
 TOPICS = ("SessionStatus", "DriverList", "LapCount", "TrackStatus", "TimingData")
 TIMEOUT_S = 30.0
+# A longer silence in the archive is cut to this many seconds of race time.
+MAX_GAP_S = 60.0
+# With --speed, the replay sleeps at most this long between pushes.
+SLEEP_SLICE_S = 1.0
 
 
 TIMESTAMP = re.compile(r"(?:(\d+)\.)?(\d\d):(\d\d):(\d\d\.\d+)")
@@ -164,13 +170,26 @@ def replay(
     last_tick = float("-inf")
     summary: tuple[str, str, str] | None = None
 
+    skipped = 0.0
+    prev_t: float | None = None
+    snapshot: dict[str, Any] | None = None
     for t, topic, msg in events:
         if first_t is None:
             first_t = t
+        if prev_t is not None and t - prev_t > MAX_GAP_S:
+            skipped += t - prev_t - MAX_GAP_S
+        prev_t = t
         if speed > 0:
-            delay = (t - first_t) / speed - (clock() - started)
-            if delay > 0:
-                sleep(delay)
+            target = (t - first_t - skipped) / speed
+            delay = target - (clock() - started)
+            while delay > 0:
+                # In slices, pushing meanwhile (the pusher sends a heartbeat
+                # when due), so a quiet stretch never reads as NO DATA.
+                sleep(min(delay, SLEEP_SLICE_S))
+                if push is not None and snapshot is not None:
+                    push(snapshot, clock())
+                    last_tick = clock()
+                delay = target - (clock() - started)
 
         if topic == "LapCount" and isinstance(msg, dict) and "CurrentLap" in msg:
             ended = int(state.lap) if state.lap.isdigit() else None

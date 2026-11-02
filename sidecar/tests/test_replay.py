@@ -143,7 +143,55 @@ def test_speed_factor_sleeps():
 
     events = [(10.0, "SessionStatus", {"Status": "Started"}), (30.0, "LapCount", {"CurrentLap": 2})]
     replay(events, speed=10, out=io.StringIO(), sleep=sleep, clock=clock)
-    assert sleeps == [pytest.approx(2.0)]
+    # 2 s of waiting, in slices of SLEEP_SLICE_S.
+    assert sleeps == [pytest.approx(1.0), pytest.approx(1.0)]
+
+
+def fake_time():
+    now = [0.0]
+
+    def clock():
+        return now[0]
+
+    def sleep(seconds):
+        now[0] += seconds
+
+    return now, clock, sleep
+
+
+def test_long_archive_gap_is_cut_short():
+    # Mexico 2026: an early "Started", then lights out a day later.
+    now, clock, sleep = fake_time()
+    events = [
+        (0.0, "SessionStatus", {"Status": "Started"}),
+        (96000.0, "LapCount", {"CurrentLap": 1}),
+        (96020.0, "LapCount", {"CurrentLap": 2}),
+    ]
+    replay(events, speed=20, out=io.StringIO(), sleep=sleep, clock=clock)
+    assert now[0] == pytest.approx((replay_mod.MAX_GAP_S + 20) / 20)
+
+
+def test_pushes_while_waiting():
+    # A 50 s silence (under MAX_GAP_S) after the mini race: still a push
+    # every SLEEP_SLICE_S, so the plugin never sees NO DATA.
+    now, clock, sleep = fake_time()
+    events = list(merge(read_dir(FIXTURE)))
+    last_t = events[-1][0]
+    events.append((last_t + 50.0, "LapCount", {"CurrentLap": 3}))
+    pushes = []
+    replay(
+        events,
+        speed=1,
+        out=io.StringIO(),
+        push=lambda snap, at: pushes.append(at),
+        sleep=sleep,
+        clock=clock,
+    )
+    quiet_start = now[0] - 50.0
+    quiet = [at for at in pushes if at >= quiet_start]
+    gaps = [b - a for a, b in zip(quiet, quiet[1:])]
+    assert len(quiet) >= 50
+    assert max(gaps) <= replay_mod.SLEEP_SLICE_S + 1e-9
 
 
 def test_main_print_from_dir(capsys):
