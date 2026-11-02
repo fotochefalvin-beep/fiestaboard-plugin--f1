@@ -171,14 +171,20 @@ def replay(
     summary: tuple[str, str, str] | None = None
 
     skipped = 0.0
-    prev_t: float | None = None
+    latest_t: float | None = None
+    backwards = 0
     snapshot: dict[str, Any] | None = None
     for t, topic, msg in events:
         if first_t is None:
             first_t = t
-        if prev_t is not None and t - prev_t > MAX_GAP_S:
-            skipped += t - prev_t - MAX_GAP_S
-        prev_t = t
+        # Measured from the latest time seen: an out-of-order message must
+        # not make the same gap count twice.
+        if latest_t is not None and t < latest_t:
+            backwards += 1
+        elif latest_t is not None and t - latest_t > MAX_GAP_S:
+            skipped += t - latest_t - MAX_GAP_S
+            log.info("replay: skipped %.0f s without messages at t=%.1f s", t - latest_t - MAX_GAP_S, t - first_t)
+        latest_t = t if latest_t is None else max(latest_t, t)
         if speed > 0:
             target = (t - first_t - skipped) / speed
             delay = target - (clock() - started)
@@ -212,6 +218,8 @@ def replay(
                 push(snapshot, clock())
                 last_tick = clock()
 
+    if backwards:
+        log.info("replay: %d message(s) were older than one before them", backwards)
     final = state.snapshot()
     if push is not None and final is not None:
         push(final, clock())

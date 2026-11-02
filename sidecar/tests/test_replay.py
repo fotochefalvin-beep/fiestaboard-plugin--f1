@@ -171,6 +171,19 @@ def test_long_archive_gap_is_cut_short():
     assert now[0] == pytest.approx((replay_mod.MAX_GAP_S + 20) / 20)
 
 
+def test_out_of_order_message_does_not_skip_the_gap_twice():
+    now, clock, sleep = fake_time()
+    events = [
+        (0.0, "SessionStatus", {"Status": "Started"}),
+        (96000.0, "LapCount", {"CurrentLap": 1}),
+        (500.0, "TrackStatus", {"Status": "1"}),  # older than the one before
+        (96020.0, "LapCount", {"CurrentLap": 2}),
+        (96060.0, "LapCount", {"CurrentLap": 3}),
+    ]
+    replay(events, speed=1, out=io.StringIO(), sleep=sleep, clock=clock)
+    assert now[0] == pytest.approx(replay_mod.MAX_GAP_S + 60)
+
+
 def test_pushes_while_waiting():
     # A 50 s silence (under MAX_GAP_S) after the mini race: still a push
     # every SLEEP_SLICE_S, so the plugin never sees NO DATA.
