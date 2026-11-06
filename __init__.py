@@ -455,6 +455,8 @@ class F1Plugin(PluginBase):
             if (
                 new_race
                 or finished
+                # A new qualifying part: the old part's times must not stay.
+                or snapshot["session_part"] != self._live["session_part"]
                 or top_codes(snapshot["grid"], n) != top_codes(self._published_grid, n)
             ):
                 self._published_grid = snapshot["grid"]

@@ -55,16 +55,40 @@ def test_quali_part(plugin, kind, part):
 
 
 def test_part_change_within_quali_is_the_same_session(plugin, clock):
-    """Q1 -> Q2: no new session, the published grid follows top-N rules."""
-    push(plugin, session_push(part="Q1"))
+    """Q1 -> Q2: no new session (no hold reset), but the grid is republished."""
+    push(plugin, session_push(part="Q1", track_status="SC"))
     clock.advance(30)
     swapped_low = grid(["VER", "NOR", "LEC", "HAM", "RUS", "PIA", "SAI", "ALO", "GAS", "OCO"])
-    payload = session_push(part="Q2")
+    payload = session_push(part="Q2", track_status="")
     payload["grid"] = swapped_low
     push(plugin, payload)
     data = plugin.fetch_data().data
     assert data["session_part"] == "Q2"
-    assert codes(data)[6:8] == ["ALO", "SAI"]  # below N: grid kept
+    assert data["track_status"] == "SC"  # same session: last status kept
+    assert codes(data)[6:8] == ["SAI", "ALO"]  # new part: grid republished
+    # Within Q2, a below-N swap alone is ignored again.
+    payload = session_push(part="Q2")
+    push(plugin, payload)
+    assert codes(plugin.fetch_data().data)[6:8] == ["SAI", "ALO"]
+
+
+def test_new_quali_part_republishes_grid_with_same_top_n(plugin, clock):
+    """Q1 -> Q2 with the same top N: the Q1 times must not stay under Q2."""
+    q1 = session_push(part="Q1")
+    q1["grid"][0]["best"] = "1:17.341"
+    push(plugin, q1)
+    clock.advance(30)
+    q2 = session_push(part="Q2")  # same order, part-2 times reset
+    push(plugin, q2)
+    data = plugin.fetch_data().data
+    assert data["session_part"] == "Q2"
+    assert data["grid"][0]["best"] == ""
+    assert data["grid"] == q2["grid"]
+    # Within the part, the top-N rule applies again.
+    q2_later = session_push(part="Q2")
+    q2_later["grid"][0]["best"] = "1:16.900"
+    push(plugin, q2_later)
+    assert plugin.fetch_data().data["grid"][0]["best"] == ""
 
 
 def test_session_shown_during_no_data_and_finished(plugin, clock):

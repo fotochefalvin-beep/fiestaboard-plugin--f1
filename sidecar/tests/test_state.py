@@ -29,8 +29,8 @@ def driver(number, tla, last, team="McLaren", line=None):
     return {number: info}
 
 
-def started_state():
-    state = RaceState()
+def started_state(session_type="RACE"):
+    state = RaceState(session_type)
     state.apply("DriverList", {**driver("1", "VER", "Verstappen", "Red Bull Racing", 1), **driver("4", "NOR", "Norris", line=2)})
     state.apply(
         "TimingData",
@@ -149,9 +149,10 @@ def test_no_snapshot_without_drivers():
     assert state.snapshot() is None
 
 
+@pytest.mark.parametrize("session_type", ["RACE", "SPRINT", "FP1", "FP2", "FP3"])
 @pytest.mark.parametrize("status", ["Finished", "Finalised", "Ends"])
-def test_finished(status):
-    state = started_state()
+def test_finished(status, session_type):
+    state = started_state(session_type)
     state.apply("SessionStatus", {"Status": status})
     assert state.snapshot()["session"] == "FINISHED"
     state.apply("SessionStatus", {"Status": ""})  # ignored
