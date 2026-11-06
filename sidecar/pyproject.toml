@@ -1,6 +1,6 @@
 [project]
 name = "f1-live-standings-sidecar"
-version = "0.3.0"
+version = "0.3.1"
 description = "FastF1 sidecar for the FiestaBoard F1 Live Standings plugin: F1 live timing around each session of a race weekend -> session snapshots pushed to the plugin."
 requires-python = ">=3.14"
 license = "MIT"

@@ -18,6 +18,13 @@ healthcheck heartbeat stays fresh):
    After FINISHED (in qualifying: after Q3) the snapshot is pushed for 5
    more minutes (late finishers settle the classification), then the feed
    is left. The window's hard cap always ends it.
+   Before a session starts, F1 still serves the previous session's final
+   state: while the feed's SessionInfo starts more than 1 h from the
+   scheduled start, the state is discarded and the feed ignored (nothing is
+   pushed); once SessionInfo turns to the scheduled session, the sidecar
+   subscribes again for a fresh, complete state (also every 2 min while it
+   stays on another session, in case F1 only serves the new session to a
+   new subscription).
 4. A failed sign-in is logged (never the credentials) and retried every
    5 minutes while the window is open.
 
@@ -32,7 +39,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -42,7 +49,7 @@ from . import live
 from .config import ConfigError, load_config
 from .notify import Notifier
 from .schedule import Schedule, ScheduleError, Session
-from .state import RaceState
+from .state import RaceState, session_info_start
 
 log = logging.getLogger("sidecar")
 
@@ -57,6 +64,10 @@ RECONNECT_S = 10.0
 SIGNIN_RETRY_S = 5 * 60.0
 SCHEDULE_RETRY_S = 5 * 60.0
 IDLE_S = 3600.0
+# SessionInfo's start this close to the scheduled start: the feed is on the
+# session being followed (sessions of a weekend are hours apart).
+SESSION_MATCH = timedelta(hours=1)
+WRONG_SESSION_RESUBSCRIBE_S = 120.0
 
 
 def change_key(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -127,6 +138,9 @@ class Sidecar:
         self._prewarm_retry: dict[str, float] = {}
         self._signin_retry: dict[str, float] = {}
         self._announced: str | None = None
+        self.following: Session | None = None
+        self.wrong_session = False  # the feed is still on another session
+        self.resubscribe = False  # it just turned to the followed session
 
     # ── sign-in ──────────────────────────────────────────────────────────
 
@@ -184,6 +198,8 @@ class Sidecar:
         outcome = self.follow(race)
         if outcome in ("finished", "cap"):
             self.done.add(race.key)
+            if outcome == "cap" and self.wrong_session:
+                log.warning("session %s: the feed never turned to it before the window closed", race.key)
             log.info("session %s done (%s)", race.key, outcome)
             return 0.0
         return RECONNECT_S
@@ -196,10 +212,34 @@ class Sidecar:
 
     def _on_topic(self, topic: str, data: Any) -> None:
         with self.lock:
-            self.state.apply(topic, data)
+            if topic == "SessionInfo":
+                self._session_info(data)
+            elif not self.wrong_session:
+                self.state.apply(topic, data)
+
+    def _session_info(self, msg: Any) -> None:
+        """Track whether the feed is on the followed session (lock held)."""
+        race = self.following
+        start = session_info_start(msg)
+        if race is None or start is None or not race.has_time:
+            return  # unknown: keep following as before
+        if abs(start - race.start) > SESSION_MATCH:
+            if not self.wrong_session:
+                meeting = msg.get("Meeting") if isinstance(msg.get("Meeting"), dict) else {}
+                log.info(
+                    "live: feed still on %s %s (start %s), waiting for %s",
+                    meeting.get("Name"), msg.get("Name"), start, race.key,
+                )
+                self.wrong_session = True
+                self.state = RaceState(race.type)
+        elif self.wrong_session:
+            self.wrong_session = False
+            self.resubscribe = True
 
     def follow(self, race: Session) -> str:
         """Follow the feed until finished, cap, or a dropped connection."""
+        with self.lock:
+            self.following, self.wrong_session, self.resubscribe = race, False, False
         try:
             client = self.connect_feed(self._on_topic)
         except live.AuthError as exc:
@@ -211,11 +251,18 @@ class Sidecar:
         log.info("live: following %s", race.key)
         pusher = Pusher(self.notifier)
         grace_until: float | None = None
+        connected_at = self.clock()
         try:
             while True:
                 touch(self.heartbeat_file)
                 clock = self.clock()
                 with self.lock:
+                    if self.resubscribe:
+                        log.info("live: feed now on %s, subscribing again", race.key)
+                        self.state = RaceState(race.type)
+                        return "dropped"
+                    if self.wrong_session and self.clock() - connected_at >= WRONG_SESSION_RESUBSCRIBE_S:
+                        return "dropped"  # subscribe again: maybe F1 switched without telling
                     snapshot = self.state.snapshot(self.now())
                     finished = self.state.finished
                 silent_for = clock - client.last_message_at

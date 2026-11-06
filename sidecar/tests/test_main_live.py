@@ -581,6 +581,16 @@ def test_stored_token_expiry_none(monkeypatch, tmp_path):
 # ── FastF1 adapter ───────────────────────────────────────────────────────────
 
 
+def test_dispatch_hands_on_session_info_first():
+    from signalrcore.messages.completion_message import CompletionMessage
+
+    got = []
+    snapshot = {"SessionStatus": {"Status": "Ends"}, "LapCount": {"CurrentLap": 71}, "SessionInfo": {"Name": "Race"}}
+    assert live.dispatch(CompletionMessage("1", snapshot, None), lambda topic, _: got.append(topic)) == 3
+    assert got == ["SessionInfo", "SessionStatus", "LapCount"]
+    assert "SessionInfo" in live.TOPICS
+
+
 def test_dispatch_feed_and_completion():
     from signalrcore.messages.completion_message import CompletionMessage
 
@@ -802,3 +812,135 @@ def test_connect_feed_closes_client_on_failure(monkeypatch):
     with pytest.raises(OSError):
         main_mod.connect_feed(lambda t, d: None)
     assert client.closed
+
+
+# ── 2026-11-06 Brazil FP1: the previous session's state at connect ──────────
+
+# F1 local start + offset of RACE (17:00 UTC) and of the race the week before.
+INFO_RACE = {"Name": "Race", "StartDate": "2026-11-08T14:00:00", "GmtOffset": "-03:00:00"}
+INFO_PREVIOUS = {"Meeting": {"Name": "Mexico City Grand Prix"}, "Name": "Race", "StartDate": "2026-11-01T14:00:00", "GmtOffset": "-06:00:00"}
+DRIVERS = {"1": {"Tla": "VER", "LastName": "Verstappen", "Line": 1}, "4": {"Tla": "NOR", "LastName": "Norris", "Line": 2}}
+
+
+def stale_script():
+    """Connected early: the feed still holds last week's finished race."""
+    return {
+        0: [
+            ("SessionInfo", INFO_PREVIOUS),
+            ("DriverList", DRIVERS),
+            ("SessionStatus", {"Status": "Ends", "Started": "Finished"}),
+            ("LapCount", {"CurrentLap": 71, "TotalLaps": 71}),
+            ("TimingData", {"Lines": {"4": {"Position": "1"}, "1": {"Position": "2"}}}),
+        ],
+        5: [("SessionInfo", {"ArchiveStatus": {"Status": "Generating"}})],  # partial: ignored
+        20: [("SessionInfo", INFO_RACE), ("LapCount", {"CurrentLap": 0, "TotalLaps": 71})],
+    }
+
+
+def fresh_script():
+    return {
+        0: [
+            ("SessionInfo", INFO_RACE),
+            ("DriverList", DRIVERS),
+            ("SessionStatus", {"Status": "Started", "Started": "Started"}),
+            ("LapCount", {"CurrentLap": 1, "TotalLaps": 71}),
+        ],
+    }
+
+
+def test_previous_session_at_connect_is_ignored_then_resubscribed(caplog):
+    caplog.set_level(logging.INFO)
+    t = Time(RACE.opens)
+    notifier = FakeNotifier()
+
+    def connect(on_topic):
+        client = FakeClient(on_topic, t, stale_script() if not clients else fresh_script())
+        clients.append(client)
+        return client
+
+    sidecar, clients, _ = make_sidecar(t, notifier=notifier, connect=connect)
+    # The stale "Ends" never finishes the race and nothing is pushed; when
+    # SessionInfo turns to the race, the sidecar subscribes again.
+    assert sidecar.step() == main_mod.RECONNECT_S
+    assert notifier.pushed == []
+    assert "2026-20-RACE" not in sidecar.done
+    assert clients[0].closed and clients[0].ticks == 20
+    assert "feed still on Mexico City Grand Prix Race" in caplog.text and "subscribing again" in caplog.text
+    assert sidecar.state.lap == "" and not sidecar.state.timing  # nothing old survives
+    # Second connection: the race itself, on a fresh state.
+    t.sleep(main_mod.RECONNECT_S)
+    t.wall = RACE.closes - timedelta(seconds=3)  # end quickly via the cap
+    assert sidecar.step() == 0.0
+    first = notifier.pushed[0]
+    assert first["session"] == "LIVE" and first["lap"] == "1"
+    assert [r["code"] for r in first["grid"]] == ["VER", "NOR"]  # no stale positions
+
+
+def test_session_info_of_the_followed_session_changes_nothing():
+    t = Time(RACE.opens)
+    notifier = FakeNotifier()
+
+    def connect(on_topic):
+        script = race_script()
+        script[0] = [("SessionInfo", INFO_RACE), *script[0]]
+        script[10] = [("SessionInfo", INFO_RACE)]
+        clients.append(FakeClient(on_topic, t, script))
+        return clients[-1]
+
+    sidecar, clients, _ = make_sidecar(t, notifier=notifier, connect=connect)
+    assert sidecar.step() == 0.0  # finished + grace, no resubscribe
+    assert "2026-20-RACE" in sidecar.done
+    assert notifier.pushed[0]["session"] == "LIVE"
+
+
+def test_session_without_a_time_skips_the_session_check():
+    day = Session("2026", "20", "RACE", "Brazilian Grand Prix", datetime(2026, 11, 8, tzinfo=UTC), has_time=False)
+    t = Time(day.opens)
+    notifier = FakeNotifier()
+
+    def connect(on_topic):
+        script = race_script()
+        script[0] = [("SessionInfo", INFO_PREVIOUS), *script[0]]
+        clients.append(FakeClient(on_topic, t, script))
+        return clients[-1]
+
+    sidecar, clients, _ = make_sidecar(t, notifier=notifier, schedule=FakeSchedule([day]), connect=connect)
+    assert sidecar.step() == 0.0
+    assert notifier.pushed and not sidecar.wrong_session
+
+
+def test_connected_during_a_red_flag_pushes_at_once():
+    t = Time(RACE.opens)
+    notifier = FakeNotifier()
+
+    def connect(on_topic):
+        return FakeClient(on_topic, t, {
+            0: [
+                ("SessionInfo", INFO_RACE),
+                ("DriverList", DRIVERS),
+                ("SessionStatus", {"Status": "Inactive", "Started": "Started"}),
+            ],
+        })
+
+    sidecar, _, _ = make_sidecar(t, notifier=notifier, connect=connect)
+    sidecar.step()
+    assert notifier.pushed[0]["session"] == "LIVE"
+
+
+def test_still_on_the_previous_session_subscribes_again_every_2_min_then_warns_at_cap(caplog):
+    caplog.set_level(logging.INFO)
+    t = Time(RACE.closes - timedelta(seconds=150))
+    notifier = FakeNotifier()
+
+    def connect(on_topic):
+        clients.append(FakeClient(on_topic, t, {0: stale_script()[0]}))
+        return clients[-1]
+
+    sidecar, clients, _ = make_sidecar(t, notifier=notifier, connect=connect)
+    assert sidecar.step() == main_mod.RECONNECT_S  # resubscribes after 2 min
+    assert clients[0].closed and clients[0].ticks == main_mod.WRONG_SESSION_RESUBSCRIBE_S
+    t.sleep(main_mod.RECONNECT_S)
+    assert sidecar.step() == 0.0  # cap
+    assert notifier.pushed == []
+    assert "feed still on" in caplog.text
+    assert "never turned to it" in caplog.text

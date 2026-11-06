@@ -57,7 +57,7 @@ def test_manifest_install_check_passes(manifest):
 
 def test_manifest_declares_variables(manifest):
     assert manifest["id"] == "f1"
-    assert manifest["version"] == "0.3.0"
+    assert manifest["version"] == "0.3.1"
     assert set(manifest["settings_schema"]["properties"]) == {"enabled", "top_n"}
     assert set(manifest["variables"]["simple"]) == {
         "race_status",

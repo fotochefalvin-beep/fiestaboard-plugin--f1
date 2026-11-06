@@ -36,15 +36,15 @@ deltas address its items as `{"1": {...}}`; `_deleted` removes keys).
 Topics used: DriverList, TimingData, LapCount, TrackStatus, SessionStatus,
 ExtrapolatedClock. Everything else (Heartbeat, RaceControlMessages, ...)
 only counts as "the feed is alive" for the caller. A snapshot exists only
-once the session has started (SessionStatus Started, or a finished state)
-and there is a grid: before the start the plugin keeps showing NEXT RACE.
+once the session has started (SessionStatus Started, or its `Started`
+field reads Started/Finished, e.g. during a red flag) and there is a grid: before the start the plugin keeps showing NEXT RACE.
 """
 
 from __future__ import annotations
 
 import re
 import unicodedata
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 PAYLOAD_VERSION = 1
@@ -62,6 +62,9 @@ TRACK_CODES = {
     "7": "VSC",  # VSC ending
 }
 STARTED_STATUSES = {"Started"}
+# SessionStatus also carries a `Started` field: Inactive -> Started ->
+# Finished. It stays "Started" through a red flag (Status Aborted/Inactive).
+STARTED_FIELD_VALUES = {"Started", "Finished"}
 FINISHED_STATUSES = {"Finished", "Finalised", "Ends"}
 # In qualifying, "Finished" ends a part; only these end the session.
 FINAL_STATUSES = {"Finalised", "Ends"}
@@ -138,6 +141,28 @@ def parse_clock(value: Any) -> int | None:
         return None
     hours, minutes, seconds = (int(x) for x in match.groups())
     return hours * 3600 + minutes * 60 + seconds
+
+
+def session_info_start(msg: Any) -> datetime | None:
+    """SessionInfo's scheduled start in UTC (`StartDate` minus `GmtOffset`).
+
+    `{"StartDate": "2026-11-06T12:30:00", "GmtOffset": "-03:00:00"}` ->
+    2026-11-06 15:30 UTC. None when either field is missing or malformed.
+    """
+    if not isinstance(msg, dict):
+        return None
+    try:
+        local = datetime.fromisoformat(str(msg.get("StartDate", "")).strip())
+    except ValueError:
+        return None
+    if local.tzinfo is not None:
+        return local.astimezone(UTC)  # already carries its offset
+    offset_text = str(msg.get("GmtOffset", "")).strip()
+    sign = -1 if offset_text.startswith("-") else 1
+    offset = parse_clock(offset_text.lstrip("+-"))
+    if offset is None:
+        return None
+    return (local - timedelta(seconds=sign * offset)).replace(tzinfo=UTC)
 
 
 def parse_utc(value: Any) -> datetime | None:
@@ -297,6 +322,8 @@ class RaceState:
             self.track_status = TRACK_CODES[code]
 
     def _session_status(self, msg: dict) -> None:
+        if str(msg.get("Started", "")).strip() in STARTED_FIELD_VALUES:
+            self.started = True  # e.g. connected during a red flag
         status = str(msg.get("Status", "")).strip()
         if not status:
             return

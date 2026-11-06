@@ -38,6 +38,9 @@ TOPICS = [
     "SessionStatus",
     "ExtrapolatedClock",
     "RaceControlMessages",
+    # Which session the feed is on: before a session starts, F1 still
+    # serves the previous session's final state.
+    "SessionInfo",
 ]
 CONNECT_TIMEOUT_S = 30.0
 
@@ -93,11 +96,13 @@ def dispatch(msg: Any, on_topic: OnTopic) -> int:
 
     - `feed` messages are `[topic, data, timestamp]` (a delta).
     - The Subscribe completion carries the current state of every topic as
-      `{topic: data}` (`CompletionMessage.result`).
+      `{topic: data}` (`CompletionMessage.result`); SessionInfo is handed on
+      first, so the receiver knows which session the rest belongs to.
     """
     result = getattr(msg, "result", None)
     if isinstance(result, dict):
-        for topic, data in result.items():
+        items = sorted(result.items(), key=lambda item: item[0] != "SessionInfo")
+        for topic, data in items:
             on_topic(str(topic), data)
         return len(result)
     if isinstance(msg, list) and len(msg) >= 2 and isinstance(msg[0], str):

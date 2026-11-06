@@ -1,7 +1,7 @@
 {
   "id": "f1",
   "name": "F1 Live Standings",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Formula 1 on the board: the live grid of every session, practice and qualifying timesheets included (pushed by the FastF1 sidecar), the driver championship and the next race and session (Jolpica). Build your own layout from the variables.",
   "author": "Alvin To",
   "icon": "trophy",

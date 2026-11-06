@@ -519,3 +519,47 @@ def test_timesheet_values_fit_the_board():
     for row in state.snapshot(T0)["grid"]:
         for value in row.values():
             assert len(value) <= 15 and value == value.upper() and value.isascii()
+
+
+# ── 2026-11-06 Brazil FP1: connected during a red flag; SessionInfo start ───
+
+
+@pytest.mark.parametrize("started", ["Started", "Finished"])
+def test_started_field_counts_during_a_stoppage(started):
+    from sidecar.state import RaceState
+
+    state = RaceState("FP1")
+    state.apply("DriverList", {"1": {"Tla": "NOR", "LastName": "Norris", "Line": 1}})
+    state.apply("SessionStatus", {"Status": "Aborted", "Started": started})
+    assert state.started and not state.finished
+    assert state.snapshot()["session"] == "LIVE"
+
+
+def test_inactive_started_field_is_not_a_start():
+    from sidecar.state import RaceState
+
+    state = RaceState("FP1")
+    state.apply("DriverList", {"1": {"Tla": "NOR", "LastName": "Norris", "Line": 1}})
+    state.apply("SessionStatus", {"Status": "Inactive", "Started": "Inactive"})
+    assert not state.started and state.snapshot() is None
+    state.apply("SessionStatus", {"Started": "Started"})  # field-only delta
+    assert state.started
+
+
+@pytest.mark.parametrize(
+    ("msg", "expected"),
+    [
+        ({"StartDate": "2026-11-06T12:30:00", "GmtOffset": "-03:00:00"}, datetime(2026, 11, 6, 15, 30, tzinfo=UTC)),
+        ({"StartDate": "2026-11-29T20:00:00", "GmtOffset": "04:00:00"}, datetime(2026, 11, 29, 16, tzinfo=UTC)),
+        ({"StartDate": "2026-11-29T20:00:00", "GmtOffset": "+05:30:00"}, datetime(2026, 11, 29, 14, 30, tzinfo=UTC)),
+        ({"StartDate": "2026-11-06T15:30:00Z", "GmtOffset": "-03:00:00"}, datetime(2026, 11, 6, 15, 30, tzinfo=UTC)),
+        ({"StartDate": "2026-11-06T12:30:00"}, None),
+        ({"StartDate": "nope", "GmtOffset": "-03:00:00"}, None),
+        ({"GmtOffset": "-03:00:00"}, None),
+        ("garbage", None),
+    ],
+)
+def test_session_info_start(msg, expected):
+    from sidecar.state import session_info_start
+
+    assert session_info_start(msg) == expected
