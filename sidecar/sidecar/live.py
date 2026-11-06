@@ -27,8 +27,8 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-# The topics the race state needs, plus Heartbeat/RaceControlMessages so a
-# quiet race still shows the feed is alive.
+# The topics the session state needs, plus Heartbeat/RaceControlMessages so
+# a quiet session still shows the feed is alive.
 TOPICS = [
     "Heartbeat",
     "DriverList",
@@ -36,6 +36,7 @@ TOPICS = [
     "LapCount",
     "TrackStatus",
     "SessionStatus",
+    "ExtrapolatedClock",
     "RaceControlMessages",
 ]
 CONNECT_TIMEOUT_S = 30.0

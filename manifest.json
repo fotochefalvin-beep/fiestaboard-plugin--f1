@@ -1,8 +1,8 @@
 {
   "id": "f1",
   "name": "F1 Live Standings",
-  "version": "0.2.0",
-  "description": "Formula 1 on the board: the live Grand Prix grid (pushed by the FastF1 sidecar), the driver championship and the next race (Jolpica). Build your own layout from the variables.",
+  "version": "0.3.0",
+  "description": "Formula 1 on the board: the live grid of every session, practice and qualifying timesheets included (pushed by the FastF1 sidecar), the driver championship and the next race and session (Jolpica). Build your own layout from the variables.",
   "author": "Alvin To",
   "icon": "trophy",
   "category": "sports",
@@ -20,7 +20,7 @@
       "top_n": {
         "type": "integer",
         "title": "Top N",
-        "description": "The live grid on the board is refreshed when the order of the first N drivers changes (1-20). Lap and track status always update.",
+        "description": "The live grid on the board is refreshed when the order of the first N drivers changes (1-20). Lap, time left and track status always update.",
         "default": 3,
         "minimum": 1,
         "maximum": 20
@@ -35,28 +35,49 @@
     },
     "simple": {
       "race_status": {
-        "description": "LIVE during a Grand Prix, NO DATA when the live feed stops for 60 s, FINISHED for 2 h after the flag, else NEXT RACE",
+        "description": "LIVE during any session (practice, qualifying, sprint, race), NO DATA when the live feed stops for 60 s, FINISHED for up to 2 h after the flag (until the next session goes live), else NEXT RACE",
         "type": "string",
         "max_length": 15,
         "group": "race",
         "example": "LIVE"
       },
+      "session": {
+        "description": "The session shown: FP1, FP2, FP3, SQ, SPRINT, Q or RACE (empty when race_status is NEXT RACE)",
+        "type": "string",
+        "max_length": 15,
+        "group": "race",
+        "example": "Q"
+      },
+      "session_part": {
+        "description": "Qualifying part: Q1, Q2, Q3 (SQ1-SQ3 in sprint qualifying); empty otherwise",
+        "type": "string",
+        "max_length": 15,
+        "group": "race",
+        "example": "Q2"
+      },
+      "time_left": {
+        "description": "Practice and qualifying: session clock remaining, M:SS or MM:SS (last known during NO DATA; empty otherwise)",
+        "type": "string",
+        "max_length": 15,
+        "group": "race",
+        "example": "12:34"
+      },
       "lap": {
-        "description": "Current lap (last known during NO DATA; empty outside a race)",
+        "description": "Race and sprint: current lap (last known during NO DATA; empty otherwise)",
         "type": "string",
         "max_length": 15,
         "group": "race",
         "example": "34"
       },
       "total_laps": {
-        "description": "Scheduled laps (empty outside a race)",
+        "description": "Race and sprint: scheduled laps (empty otherwise)",
         "type": "string",
         "max_length": 15,
         "group": "race",
         "example": "57"
       },
       "track_status": {
-        "description": "GREEN, YELLOW, SC, VSC or RED (empty outside a race)",
+        "description": "GREEN, YELLOW, SC, VSC or RED (empty outside a session)",
         "type": "string",
         "max_length": 15,
         "group": "race",
@@ -75,6 +96,20 @@
         "max_length": 15,
         "group": "race",
         "example": "SUN 21:00"
+      },
+      "next_session": {
+        "description": "Next session to start: FP1, FP2, FP3, SQ, SPRINT, Q or RACE (empty when none is left)",
+        "type": "string",
+        "max_length": 15,
+        "group": "race",
+        "example": "Q"
+      },
+      "next_session_time": {
+        "description": "Start of the next session in FiestaBoard's timezone (empty when none is left)",
+        "type": "string",
+        "max_length": 15,
+        "group": "race",
+        "example": "SAT 16:00"
       }
     },
     "arrays": {
@@ -88,6 +123,7 @@
           "team",
           "gap",
           "interval",
+          "best",
           "status"
         ]
       },
@@ -105,11 +141,16 @@
   },
   "max_lengths": {
     "race_status": 15,
+    "session": 15,
+    "session_part": 15,
+    "time_left": 15,
     "lap": 15,
     "total_laps": 15,
     "track_status": 15,
     "next_race": 15,
     "next_race_time": 15,
+    "next_session": 15,
+    "next_session_time": 15,
     "grid.*.position": 15,
     "grid.*.code": 15,
     "grid.*.name": 15,
@@ -117,6 +158,7 @@
     "grid.*.team": 15,
     "grid.*.gap": 15,
     "grid.*.interval": 15,
+    "grid.*.best": 15,
     "grid.*.status": 15,
     "standings.*.position": 15,
     "standings.*.code": 15,

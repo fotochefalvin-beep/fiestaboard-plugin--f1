@@ -1,9 +1,12 @@
-"""Replay an archived Grand Prix through `RaceState` (develop and verify).
+"""Replay an archived session through `RaceState` (develop and verify).
 
-    python -m sidecar replay <year> <gp> [--speed 20] [--print] [--samples 1,20] [--laps 44-45]
-    python -m sidecar replay --from-dir fixtures/ [--print]
+    python -m sidecar replay <year> <gp> [--session Q] [--speed 20] [--print]
+                             [--samples 1,20] [--laps 44-45]
+    python -m sidecar replay --from-dir fixtures/ [--session Q] [--print]
 
-- Downloads the archived topic streams of the race
+- `--session FP1|FP2|FP3|SQ|SPRINT|Q|RACE` (default RACE) picks the
+  session; the state is built for that session type.
+- Downloads the archived topic streams of the session
   (`https://livetiming.formula1.com<api_path><Topic>.jsonStream`) through
   FastF1's signed-in session (F1_USERNAME[_FILE]/F1_PASSWORD[_FILE], as the
   live sidecar), falling back to FastF1's mirror like FastF1 does, or
@@ -16,14 +19,19 @@
 - Pushes snapshots to FIESTABOARD_RECEIVE_URL like the live sidecar (on
   change, checked every second of wall time, heartbeat 10 s), unless
   `--print` is given: then nothing is pushed.
-- `--laps START-END` (or `--laps N`) plays only those laps: everything
+- `--laps START-END` (or `--laps N`, RACE/SPRINT only) plays only those laps: everything
   before lap START goes into `RaceState` at once, without pushing or
   waiting, so the grid is right when START begins; the replay stops when
   lap END ends (the LapCount past END is not applied) and pushes its
   last snapshot.
-- Prints the grid order at the end of each `--samples` lap, the final
-  classification, and every lap / track status / session change summary,
-  to compare with the official result.
+- Prints the grid order at the end of each `--samples` lap (practice and
+  qualifying: at each `--samples` minute after the first Started), the final
+  classification (practice and qualifying: the whole timesheet), and every
+  track status / session / qualifying part change, to compare with the
+  official result.
+- Snapshots are taken at the archive's own time: the last ExtrapolatedClock
+  `Utc` plus the archive time since it, so the session clock counts down as
+  it did live.
 
 Archived data is never written to disk by this command.
 """
@@ -38,16 +46,21 @@ import re
 import sys
 import time
 from collections.abc import Callable, Iterable, Iterator
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, TextIO
 
 import requests
 
-from .state import RaceState, _int
+from .state import RACE_TYPES, SESSION_TYPES, RaceState, _int, parse_utc
 
 log = logging.getLogger("sidecar.replay")
 
-TOPICS = ("SessionStatus", "DriverList", "LapCount", "TrackStatus", "TimingData")
+TOPICS = ("SessionStatus", "DriverList", "LapCount", "TrackStatus", "ExtrapolatedClock", "TimingData")
+# --session -> FastF1's session identifier.
+FASTF1_SESSIONS = {"FP1": "FP1", "FP2": "FP2", "FP3": "FP3", "SQ": "SQ", "SPRINT": "S", "Q": "Q", "RACE": "R"}
+# Topics an archive may lack (practice and qualifying have no LapCount).
+OPTIONAL_TOPICS = ("LapCount", "ExtrapolatedClock")
 TIMEOUT_S = 30.0
 # A longer silence in the archive is cut to this many seconds of race time.
 MAX_GAP_S = 60.0
@@ -105,12 +118,12 @@ def read_dir(directory: Path) -> dict[str, list[tuple[float, Any]]]:
     return streams
 
 
-def api_path(year: int, gp: str) -> str:
-    """FastF1's archive path of the Grand Prix (`/static/2024/.../Race/`)."""
+def api_path(year: int, gp: str, session: str = "RACE") -> str:
+    """FastF1's archive path of the session (`/static/2024/.../Race/`)."""
     import fastf1
 
     event = int(gp) if gp.isdigit() else gp
-    return fastf1.get_session(year, event, "R").api_path
+    return fastf1.get_session(year, event, FASTF1_SESSIONS[session]).api_path
 
 
 def fastf1_get(urls: list[str]) -> Any:
@@ -144,6 +157,9 @@ def download(path: str, get: Callable[[list[str]], Any] | None = None) -> dict[s
                 break
             failures.append(f"{url.split('/')[2]} HTTP {response.status_code}")
         else:
+            if topic in OPTIONAL_TOPICS and all("HTTP 404" in f or "HTTP 403" in f for f in failures):
+                log.info("replay: no %s in this archive", topic)
+                continue
             raise RuntimeError(f"{topic}: {', '.join(failures)}")
         streams[topic] = parse_stream(response.content.decode("utf-8-sig"))
         log.info("replay: %s %d message(s)", topic, len(streams[topic]))
@@ -168,9 +184,48 @@ def order(snapshot: dict[str, Any] | None) -> str:
     return " ".join(row["code"] for row in snapshot["grid"])
 
 
+def clock_text(snapshot: dict[str, Any] | None) -> str:
+    clock = (snapshot or {}).get("clock")
+    if not clock:
+        return "-"
+    minutes, seconds = divmod(clock["remaining"], 60)
+    return f"{minutes}:{seconds:02d}{'' if clock['running'] else ' STOPPED'}"
+
+
+def timesheet(snapshot: dict[str, Any] | None) -> list[str]:
+    """One line per driver: position, code, best, gap, interval, status."""
+    lines = []
+    for row in (snapshot or {}).get("grid", []):
+        lines.append(
+            f"  {row['position']:>2} {row['code']:<3} {row['best'] or '-':>9} "
+            f"{row['gap'] or '-':>8} {row['interval'] or '-':>8} {row['status']}".rstrip()
+        )
+    return lines
+
+
+class FeedClock:
+    """The archive's wall time: last ExtrapolatedClock `Utc` + time since it."""
+
+    def __init__(self) -> None:
+        self._utc: datetime | None = None
+        self._t = 0.0
+
+    def see(self, t: float, topic: str, msg: Any) -> None:
+        if topic == "ExtrapolatedClock" and isinstance(msg, dict):
+            utc = parse_utc(msg.get("Utc"))
+            if utc is not None:
+                self._utc, self._t = utc, t
+
+    def now(self, t: float) -> datetime | None:
+        if self._utc is None:
+            return None
+        return self._utc + timedelta(seconds=t - self._t)
+
+
 def replay(
     events: Iterable[tuple[float, str, Any]],
     *,
+    session_type: str = "RACE",
     speed: float = 0.0,
     samples: Iterable[int] = (),
     laps: tuple[int, int] | None = None,
@@ -182,10 +237,14 @@ def replay(
     """Feed *events* to a fresh RaceState; print samples; push via *push*.
 
     With *laps* = (START, END), only laps START..END are paced and pushed.
+    In practice and qualifying *samples* are minutes after the first Started.
     """
     out = out or sys.stdout
-    state = RaceState()
+    state = RaceState(session_type)
+    race = session_type in RACE_TYPES
+    feed_clock = FeedClock()
     wanted = set(samples)
+    started_t: float | None = None
     first_t: float | None = None
     # Pacing starts here: the first message, or the first one of lap START.
     pace_t: float | None = None
@@ -231,23 +290,34 @@ def replay(
                     last_tick = clock()
                 delay = target - (clock() - started)
 
-        if topic == "LapCount" and isinstance(msg, dict) and "CurrentLap" in msg:
+        if race and topic == "LapCount" and isinstance(msg, dict) and "CurrentLap" in msg:
             ended = int(state.lap) if state.lap.isdigit() else None
             if ended in wanted and str(msg["CurrentLap"]) != state.lap:
                 print(f"lap {ended:>3} end: {order(state.snapshot())}", file=out)
                 wanted.discard(ended)
+        if not race and started_t is not None:
+            for minute in sorted(m for m in wanted if t - started_t >= m * 60):
+                snap = state.snapshot(feed_clock.now(started_t + minute * 60))
+                print(f"min {minute:>3}: clock {clock_text(snap)} {order(snap)}", file=out)
+                print("\n".join(timesheet(snap)[:10]), file=out)
+                wanted.discard(minute)
         if laps is not None and new_lap is not None and new_lap > laps[1]:
             stopped = True
             break
+        feed_clock.see(t, topic, msg)
         state.apply(topic, msg)
+        if started_t is None and state.started:
+            started_t = t
 
-        snapshot = state.snapshot()
+        snapshot = state.snapshot(feed_clock.now(t))
         if snapshot is not None:
-            current = (snapshot["session"], snapshot["track_status"], snapshot["lap"])
-            if summary is None or current[:2] != summary[:2]:
+            part = snapshot.get("session_part", "")
+            current = (snapshot["session"], snapshot["track_status"], part)
+            if summary is None or current != summary:
+                extra = f" part={part} clock={clock_text(snapshot)}" if not race else ""
                 print(
                     f"t={t - first_t:8.1f}s lap={snapshot['lap'] or '-':>3} "
-                    f"session={snapshot['session']} track={snapshot['track_status'] or '-'}",
+                    f"session={snapshot['session']} track={snapshot['track_status'] or '-'}{extra}",
                     file=out,
                 )
             summary = current
@@ -261,10 +331,15 @@ def replay(
         log.warning("replay: lap %d never reached, nothing played", laps[0])
     elif stopped:
         print(f"stopped after lap {laps[1]}", file=out)
-    final = state.snapshot()
+    final = state.snapshot(feed_clock.now(latest_t) if latest_t is not None else None)
     if playing and push is not None and final is not None:
         push(final, clock())
-    print(f"final ({state.session}, lap {state.lap}/{state.total_laps}): {order(final)}", file=out)
+    if race:
+        print(f"final ({state.session}, lap {state.lap}/{state.total_laps}): {order(final)}", file=out)
+    else:
+        label = state.part_label or session_type
+        print(f"final ({state.session}, {label}, clock {clock_text(final)}): {order(final)}", file=out)
+        print("\n".join(timesheet(final)), file=out)
     return state
 
 
@@ -274,13 +349,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("gp", nargs="?")
     parser.add_argument("--from-dir", type=Path, help="read <Topic>.jsonStream files from here")
     parser.add_argument("--path", help="archive path (/static/...), instead of year/gp")
+    parser.add_argument(
+        "--session", type=str.upper, choices=SESSION_TYPES, default="RACE", help="session to replay (default RACE)"
+    )
     parser.add_argument("--speed", type=float, default=0.0, help="x real time, 0 = no waiting")
-    parser.add_argument("--samples", default="", help="laps to print the order at, e.g. 1,20,71")
+    parser.add_argument(
+        "--samples", default="", help="laps (practice/qualifying: minutes) to print the order at, e.g. 1,20,71"
+    )
     parser.add_argument(
         "--laps", type=parse_laps, help="play only these laps, e.g. 44-45 (earlier ones at once)"
     )
     parser.add_argument("--print", action="store_true", help="only print, do not push")
     args = parser.parse_args(argv)
+    if args.laps and args.session not in RACE_TYPES:
+        parser.error("--laps needs --session RACE or SPRINT")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
     from . import live
@@ -291,7 +373,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         samples = [int(x) for x in args.samples.split(",") if x.strip()]
     except ValueError:
-        log.error("--samples must be lap numbers, e.g. 1,20,71")
+        log.error("--samples must be lap (or minute) numbers, e.g. 1,20,71")
         return 2
 
     session = requests.Session()
@@ -303,7 +385,7 @@ def main(argv: list[str] | None = None) -> int:
             if not (args.path or (args.year and args.gp)):
                 parser.error("give <year> <gp>, --path or --from-dir")
             live.configure_auth(*load_credentials())
-            path = args.path or api_path(args.year, args.gp)
+            path = args.path or api_path(args.year, args.gp, args.session)
             log.info("replay: %s", path)
             live.archive_token()  # sign in up front: a bad password fails here, clearly
             streams = download(path)
@@ -320,5 +402,7 @@ def main(argv: list[str] | None = None) -> int:
             Notifier(push_config.fiestaboard_receive_url, push_config.fiestaboard_api_token, session)
         )
         push = pusher.tick
-    replay(merge(streams), speed=args.speed, samples=samples, laps=args.laps, push=push)
+    replay(
+        merge(streams), session_type=args.session, speed=args.speed, samples=samples, laps=args.laps, push=push
+    )
     return 0

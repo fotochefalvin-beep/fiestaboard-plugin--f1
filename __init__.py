@@ -1,26 +1,40 @@
 """F1 Live Standings plugin for FiestaBoard.
 
-The driver championship and the next Grand Prix from Jolpica
-(``api.jolpi.ca``, free, no key), plus the live race grid pushed by the
-FastF1 sidecar (``sidecar/``) to ``/api/v1/plugins/f1/receive``. Template
-variables (plugin id ``f1``), every value upper-case ASCII and at most 15
-characters (Vestaboard Note):
+The driver championship and the next Grand Prix and session from Jolpica
+(``api.jolpi.ca``, free, no key), plus the live grid of every session (FP1,
+FP2, FP3, sprint qualifying, sprint, qualifying, race) pushed by the FastF1
+sidecar (``sidecar/``) to ``/api/v1/plugins/f1/receive``. Template variables
+(plugin id ``f1``), every value upper-case ASCII and at most 15 characters
+(Vestaboard Note):
 
 * ``race_status`` -- ``LIVE`` (sidecar push < 60 s old), ``NO DATA`` (no
-  push for 60 s during a race; the last grid/lap/track status stay),
-  ``FINISHED`` (classification held 2 h from the first FINISHED push), else
-  ``NEXT RACE``.
-* ``lap``, ``total_laps``, ``track_status`` (``GREEN``/``YELLOW``/``SC``/
-  ``VSC``/``RED``) -- always the latest push; empty outside a race.
-* ``grid`` -- array, 0-indexed, by race position (``{{f1.grid.0.code}}`` is
-  the leader), fields ``position``, ``code``, ``name``, ``number``, ``team``,
-  ``gap``, ``interval``, ``status``. The published grid is replaced only when
-  the order of P1..N changes (setting ``top_n``, default 3), on the first push
-  of a race and on every FINISHED push; ``[]`` outside a race.
+  push for 60 s during a session; the last grid/lap/time left/track status
+  stay), ``FINISHED`` (classification held 2 h from the first FINISHED
+  push, or until the next session pushes), else ``NEXT RACE``. The same
+  values for every session.
+* ``session`` -- ``FP1``/``FP2``/``FP3``/``SQ``/``SPRINT``/``Q``/``RACE``
+  while a session is LIVE, NO DATA or FINISHED; empty otherwise.
+* ``session_part`` -- qualifying only: ``Q1``..``Q3`` (``SQ1``..``SQ3``).
+* ``time_left`` -- practice and qualifying: the session clock (``M:SS`` /
+  ``MM:SS``), counted down between pushes while it runs; last known during
+  NO DATA; empty otherwise.
+* ``lap``, ``total_laps`` (race and sprint only), ``track_status``
+  (``GREEN``/``YELLOW``/``SC``/``VSC``/``RED``) -- always the latest push;
+  empty outside a session.
+* ``grid`` -- array, 0-indexed, by position (``{{f1.grid.0.code}}`` is the
+  leader / fastest), fields ``position``, ``code``, ``name``, ``number``,
+  ``team``, ``gap``, ``interval``, ``best`` (practice / qualifying best lap),
+  ``status`` (``PIT``/``OUT``/``DNF``/``KNOCKED OUT``). The published grid
+  is replaced only when the order of P1..N changes (setting ``top_n``,
+  default 3), on the first push of a session and on every FINISHED push;
+  ``[]`` outside a session.
 * ``next_race`` -- Jolpica ``raceName`` without "Grand Prix"
   (``BRAZILIAN``, ``MEXICO CITY``); empty when the season is over.
 * ``next_race_time`` -- the start in FiestaBoard's general timezone
   (``SUN 18:00``; UTC when unset); empty when the season is over.
+* ``next_session``, ``next_session_time`` -- the next session to start in
+  that race weekend (the race included) and its start (``SAT 15:30``);
+  empty when none is left.
 * ``standings`` -- array, 0-indexed, leader first
   (``{{f1.standings.0.code}}``), fields ``position``, ``code``, ``name``,
   ``points``, ``wins``; ``[]`` before the first race of a season.
@@ -74,7 +88,12 @@ RESULT_HOLD_SECONDS = 2 * 3600
 # dropped this long after its last push: the sidecar's hard cap.
 LIVE_EXPIRY_SECONDS = 4 * 3600
 TRACK_STATUSES = ("GREEN", "YELLOW", "SC", "VSC", "RED")
-GRID_FIELDS = ("position", "code", "name", "number", "team", "gap", "interval", "status")
+GRID_FIELDS = ("position", "code", "name", "number", "team", "gap", "interval", "best", "status")
+SESSION_TYPES = ("FP1", "FP2", "FP3", "SQ", "SPRINT", "Q", "RACE")
+QUALI_TYPES = ("SQ", "Q")
+SESSION_PARTS = ("Q1", "Q2", "Q3", "SQ1", "SQ2", "SQ3")
+# The longest session clock (FP1 is 1 h); more is a bad push.
+MAX_CLOCK_SECONDS = 3 * 3600
 # More than any F1 field (22 cars in 2026); a bigger grid is a bad push.
 MAX_GRID = 30
 MAX_PAYLOAD_BYTES = 64 * 1024
@@ -194,14 +213,48 @@ def parse_snapshot(payload: Any, raw_body: bytes = b"") -> Dict[str, Any]:
             raise ValueError("every grid entry must be an object")
         rows.append({field: _payload_text(item, field) for field in GRID_FIELDS})
     track = _payload_text(payload, "track_status")
+    session_type = payload.get("session_type") or ""
+    if session_type and session_type not in SESSION_TYPES:
+        raise ValueError(f"session_type must be one of {', '.join(SESSION_TYPES)}")
+    session_part = payload.get("session_part") or ""
+    if session_part:
+        if session_part not in SESSION_PARTS:
+            raise ValueError(f"session_part must be one of {', '.join(SESSION_PARTS)}")
+        if session_type and session_part[:-1] != session_type:
+            raise ValueError(f"session_part {session_part} does not belong to {session_type}")
     return {
         "session": session,
+        "session_type": session_type,
+        "session_part": session_part,
+        "clock": _parse_clock(payload.get("clock")),
         "lap": _payload_text(payload, "lap"),
         "total_laps": _payload_text(payload, "total_laps"),
         # Unknown or missing: keep the last known status (caller).
         "track_status": track if track in TRACK_STATUSES else "",
         "grid": rows,
     }
+
+
+def _parse_clock(value: Any) -> Optional[Dict[str, Any]]:
+    """The optional ``clock`` of a push -> ``{"remaining", "running"}`` or None."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("clock must be an object")
+    remaining, running = value.get("remaining"), value.get("running")
+    if isinstance(remaining, bool) or not isinstance(remaining, int):
+        raise ValueError("clock.remaining must be an integer")
+    if not 0 <= remaining <= MAX_CLOCK_SECONDS:
+        raise ValueError(f"clock.remaining must be 0..{MAX_CLOCK_SECONDS}")
+    if not isinstance(running, bool):
+        raise ValueError("clock.running must be true or false")
+    return {"remaining": remaining, "running": running}
+
+
+def format_clock(seconds: int) -> str:
+    """754 -> ``12:34``, 59 -> ``0:59``, 3600 -> ``60:00``."""
+    minutes, rest = divmod(max(0, int(seconds)), 60)
+    return f"{minutes}:{rest:02d}"
 
 
 def top_codes(grid: List[Dict[str, str]], n: int) -> List[str]:
@@ -236,7 +289,7 @@ def resolve_timezone(name: str) -> tzinfo:
 
 
 class F1Plugin(PluginBase):
-    """Live race grid, driver championship and next Grand Prix as board variables."""
+    """Live session grid, driver championship and next race / session as board variables."""
 
     def __init__(self, manifest: Dict[str, Any]):
         super().__init__(manifest)
@@ -372,7 +425,7 @@ class F1Plugin(PluginBase):
         headers: Dict[str, str],
         raw_body: bytes = b"",
     ) -> None:
-        """Store a v1 race snapshot from the sidecar (latest wins).
+        """Store a v1 session snapshot from the sidecar (latest wins).
 
         ``ValueError`` (HTTP 400) for a bad push; the state is then unchanged.
         """
@@ -384,10 +437,14 @@ class F1Plugin(PluginBase):
 
         with self._lock:
             clock = self._clock()
-            status = self._live_status(clock)  # expires an old race first
+            status = self._live_status(clock)  # expires an old session first
             finished = snapshot["session"] == SESSION_FINISHED
-            if status == STATUS_FINISHED and not finished:
-                # A LIVE push after the flag: a new race begins.
+            if status is not None and snapshot["session_type"] != self._live["session_type"]:
+                # Another session (Q after FP3, the race after Q): it takes over.
+                self._clear_live()
+                status = None
+            elif status == STATUS_FINISHED and not finished:
+                # A LIVE push after the flag: a new session begins.
                 self._clear_live()
                 status = None
             new_race = status is None
@@ -412,29 +469,52 @@ class F1Plugin(PluginBase):
 
     # ── output ───────────────────────────────────────────────────────────
 
+    def _time_left(self, live: Dict[str, Any], status: str, clock: float) -> str:
+        """The session clock at *clock*: counted down only while LIVE and running."""
+        session_clock = live.get("clock")
+        if not session_clock:
+            return ""
+        remaining = session_clock["remaining"]
+        if status == STATUS_LIVE and session_clock["running"]:
+            remaining -= int(clock - self._live_at)
+        return fit(format_clock(remaining))
+
     def _variables(self) -> Dict[str, Any]:
         race = self._next_race
+        next_session = next_session_time = ""
         if race is not None:
             tz = resolve_timezone(self._timezone_name())
             next_race = short_race_name(race["race_name"])
             next_time = fit(format_start(race["start"], tz, race.get("has_time", True)))
+            now = self._now()
+            upcoming = [s for s in race.get("sessions") or [] if s[1] > now]
+            if upcoming:
+                kind, start, has_time = min(upcoming, key=lambda s: s[1])
+                next_session = kind
+                next_session_time = fit(format_start(start, tz, has_time))
         else:
             next_race = next_time = ""
-        status = self._live_status(self._clock())
+        clock = self._clock()
+        status = self._live_status(clock)
         live = self._live if status is not None else None
         return {
             "race_status": status or STATUS_NEXT_RACE,
+            "session": live["session_type"] if live else "",
+            "session_part": live["session_part"] if live else "",
+            "time_left": self._time_left(live, status, clock) if live else "",
             "lap": live["lap"] if live else "",
             "total_laps": live["total_laps"] if live else "",
             "track_status": live["track_status"] if live else "",
             "next_race": next_race,
             "next_race_time": next_time,
+            "next_session": next_session,
+            "next_session_time": next_session_time,
             "grid": [dict(row) for row in self._published_grid] if live else [],
             "standings": standings_rows(self._standings or []),
         }
 
     def fetch_data(self) -> PluginResult:
-        """Live race state (memory) plus championship and next race (cached)."""
+        """Live session state (memory) plus championship and next race (cached)."""
         with self._lock:
             self._refresh()
             if (

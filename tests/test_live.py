@@ -23,6 +23,7 @@ def row(position, code, gap="", interval="", status="", **extra):
         "team": extra.get("team", "TEAM"),
         "gap": gap,
         "interval": interval,
+        "best": extra.get("best", ""),
         "status": status,
     }
     return item
@@ -60,7 +61,7 @@ def codes(data):
 
 
 def all_live_values(data):
-    for key in ("race_status", "lap", "total_laps", "track_status"):
+    for key in ("race_status", "session", "session_part", "time_left", "lap", "total_laps", "track_status"):
         yield data[key]
     for item in data["grid"]:
         yield from item.values()
@@ -100,9 +101,10 @@ def test_manifest_live_variables(manifest):
         "team",
         "gap",
         "interval",
+        "best",
         "status",
     ]
-    for name in ("lap", "total_laps", "track_status"):
+    for name in ("lap", "total_laps", "track_status", "session", "session_part", "time_left"):
         assert manifest["variables"]["simple"][name]["max_length"] == 15
         assert manifest["max_lengths"][name] == 15
     for field in array["item_fields"]:
@@ -180,6 +182,7 @@ def test_missing_grid_fields_are_empty(plugin):
         "team": "",
         "gap": "",
         "interval": "",
+        "best": "",
         "status": "",
     }
 

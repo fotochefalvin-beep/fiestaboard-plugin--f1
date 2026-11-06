@@ -7,8 +7,11 @@ Free, no key: ``https://api.jolpi.ca/ergast/f1/current/...``.
   -> list of plain dicts (``position``, ``points``, ``wins``, ``code``,
   ``family_name``; raw strings as Jolpica sends them).
 * :meth:`JolpicaClient.next_race` -- ``/current/next/`` -> ``{"race_name",
-  "start", "has_time"}`` (``start`` an aware UTC datetime) or ``None`` when
-  the season has no race left.
+  "start", "has_time", "sessions"}`` (``start`` an aware UTC datetime) or
+  ``None`` when the season has no race left. ``sessions`` is every session
+  of that weekend as ``(type, start, has_time)``, sorted by start, the race
+  included (types ``FP1``/``FP2``/``FP3``/``SQ``/``SPRINT``/``Q``/``RACE``;
+  missing or malformed session entries are skipped).
 
 Every failure (timeout, connection error, non-200, bad JSON, unexpected
 shape) raises :class:`JolpicaError`.
@@ -30,6 +33,16 @@ NEXT_RACE_PATH = "/current/next/"
 HTTP_TIMEOUT_SECONDS = 10
 # The whole grid fits in one page (Jolpica's default page is 30).
 STANDINGS_LIMIT = 100
+# Jolpica's per-race session keys -> session type.
+SESSION_KEYS = (
+    ("FirstPractice", "FP1"),
+    ("SecondPractice", "FP2"),
+    ("ThirdPractice", "FP3"),
+    ("SprintQualifying", "SQ"),
+    ("SprintShootout", "SQ"),
+    ("Sprint", "SPRINT"),
+    ("Qualifying", "Q"),
+)
 
 
 class JolpicaError(Exception):
@@ -55,6 +68,20 @@ def _parse_start(date_text: Any, time_text: Any) -> tuple[datetime, bool]:
     if start.tzinfo is None:
         start = start.replace(tzinfo=timezone.utc)
     return start.astimezone(timezone.utc), has_time
+
+
+def race_sessions(race: dict[str, Any], start: datetime, has_time: bool) -> list[tuple[str, datetime, bool]]:
+    """Every session of a Jolpica race object, sorted by start, RACE included."""
+    found: dict[str, tuple[datetime, bool]] = {"RACE": (start, has_time)}
+    for key, kind in SESSION_KEYS:
+        item = race.get(key)
+        if kind in found or not isinstance(item, dict):
+            continue
+        try:
+            found[kind] = _parse_start(item.get("date"), item.get("time"))
+        except JolpicaError:
+            logger.debug("F1: skipping a malformed %s", key)
+    return sorted(((kind, when, timed) for kind, (when, timed) in found.items()), key=lambda s: s[1])
 
 
 class JolpicaClient:
@@ -126,4 +153,9 @@ class JolpicaClient:
         if not isinstance(race, dict):
             raise JolpicaError(f"{NEXT_RACE_PATH}: bad race")
         start, has_time = _parse_start(race.get("date"), race.get("time"))
-        return {"race_name": str(race.get("raceName") or ""), "start": start, "has_time": has_time}
+        return {
+            "race_name": str(race.get("raceName") or ""),
+            "start": start,
+            "has_time": has_time,
+            "sessions": race_sessions(race, start, has_time),
+        }

@@ -9,6 +9,7 @@ LEC PIA HUL NOR; classification: VER HAM PIA LEC NOR HUL.
 
 import argparse
 import io
+import itertools
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,12 @@ from sidecar import replay as replay_mod
 from sidecar.replay import merge, parse_stream, parse_timestamp, read_dir, replay
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mini_race"
+# A hand-made 6-car qualifying: Q1 (red flag at 50 s, clock stopped) ends
+# with Finished at 110 s, PIA and HUL out; Q2 ends at 290 s, NOR and HAM
+# out; Q3 ends at 490 s (then Finalised, Ends). SessionPart moves on ~50 s
+# after each part's Finished, while the status still reads Finished.
+# Classification: LEC VER NOR HAM PIA HUL.
+QUALI = Path(__file__).parent / "fixtures" / "mini_quali"
 
 
 def codes(snapshot, n=None):
@@ -326,13 +333,15 @@ def test_main_download(monkeypatch, capsys):
     monkeypatch.setenv("F1_USERNAME", "me@example.com")
     monkeypatch.setenv("F1_PASSWORD", "pw")
     monkeypatch.setattr(live, "archive_token", lambda: "tok")
-    monkeypatch.setattr(replay_mod, "api_path", lambda year, gp: f"/static/{year}/{gp}/")
+    monkeypatch.setattr(replay_mod, "api_path", lambda year, gp, session: f"/static/{year}/{gp}/{session}/")
     gets = []
 
     class Resp:
         def __init__(self, topic):
-            self.status_code = 200
-            self.content = (FIXTURE / f"{topic}.jsonStream").read_bytes()
+            path = FIXTURE / f"{topic}.jsonStream"
+            # The mini race has no ExtrapolatedClock: F1 answers 404 then.
+            self.status_code = 200 if path.is_file() else 404
+            self.content = path.read_bytes() if path.is_file() else b""
 
     def get(urls):
         gets.append(urls)
@@ -340,7 +349,7 @@ def test_main_download(monkeypatch, capsys):
 
     monkeypatch.setattr(replay_mod, "fastf1_get", get)
     assert replay_mod.main(["2026", "Brazil", "--print", "--samples", "2"]) == 0
-    assert gets[0] == ["https://livetiming.formula1.com/static/2026/Brazil/SessionStatus.jsonStream"]
+    assert gets[0] == ["https://livetiming.formula1.com/static/2026/Brazil/RACE/SessionStatus.jsonStream"]
     assert "lap   2 end: VER HAM LEC PIA HUL NOR" in capsys.readouterr().out
 
 
@@ -396,7 +405,7 @@ def test_main_other_value_errors_are_load_errors(monkeypatch, caplog):
     monkeypatch.setenv("F1_USERNAME", "me@example.com")
     monkeypatch.setenv("F1_PASSWORD", "pw")
 
-    def unknown(year, gp):
+    def unknown(year, gp, session):
         raise ValueError("no event named Atlantis")
 
     monkeypatch.setattr(replay_mod, "api_path", unknown)
@@ -404,3 +413,120 @@ def test_main_other_value_errors_are_load_errors(monkeypatch, caplog):
     assert replay_mod.main(["2026", "Atlantis", "--print"]) == 1
     assert "cannot load the race: no event named Atlantis" in caplog.text
     assert "--samples" not in caplog.text
+
+
+# ── qualifying (mini_quali) ──────────────────────────────────────────────────
+
+
+def replay_quali(**kwargs):
+    pushed = []
+    out = io.StringIO()
+    state = replay(
+        merge(read_dir(QUALI)),
+        session_type="Q",
+        push=lambda snap, clock: pushed.append(snap),
+        out=out,
+        clock=iter(range(0, 10**6, 2)).__next__,
+        **kwargs,
+    )
+    return state, pushed, out.getvalue()
+
+
+def changes(values):
+    seen = []
+    for value in values:
+        if not seen or seen[-1] != value:
+            seen.append(value)
+    return seen
+
+
+def test_quali_parts_finish_only_after_q3_and_knock_outs():
+    state, pushed, text = replay_quali()
+    assert changes(s["session_part"] for s in pushed) == ["Q1", "Q2", "Q3"]
+    assert changes(s["session"] for s in pushed) == ["LIVE", "FINISHED"]
+    first_finished = next(s for s in pushed if s["session"] == "FINISHED")
+    assert first_finished["session_part"] == "Q3"
+    # 2 out after Q1, 2 more after Q2.
+    knocked = [
+        sum(r["status"] == "KNOCKED OUT" for r in s["grid"])
+        for s in pushed
+    ]
+    assert changes(knocked) == [0, 2, 4]
+    final = state.snapshot()
+    assert codes(final) == ["LEC", "VER", "NOR", "HAM", "PIA", "HUL"]
+    assert [(r["best"], r["gap"]) for r in final["grid"]][:4] == [
+        ("1:16.500", ""),
+        ("1:16.600", "+0.100"),
+        ("1:17.000", "+0.200"),  # NOR's Q2 time and gap
+        ("1:17.100", "+0.300"),
+    ]
+    assert final["grid"][4]["best"] == "1:17.900"  # PIA's Q1 time
+    assert all(s["lap"] == "" and s["total_laps"] == "" for s in pushed)
+    assert "final (FINISHED, Q3, clock 0:00 STOPPED): LEC VER NOR HAM PIA HUL" in text
+    assert "  5 PIA  1:17.900   +0.900   +0.500 KNOCKED OUT" in text
+    assert "part=Q2" in text and "part=Q3" in text
+
+
+def test_quali_clock_follows_the_feed_time():
+    _, pushed, _ = replay_quali()
+    clocks = [s["clock"] for s in pushed]
+    remaining = [c["remaining"] for c in clocks]
+    assert remaining[0] == 90
+    # Counts down while running, frozen by the red flag at 50 s left.
+    assert 50 in remaining
+    assert {"remaining": 50, "running": False} in clocks
+    # Reset to the next part's length while stopped, between parts.
+    assert {"remaining": 90, "running": False} in clocks[remaining.index(0):]
+    assert clocks[-1] == {"remaining": 0, "running": False}
+    for a, b in itertools.pairwise(clocks):
+        if a["running"] and b["running"]:
+            assert b["remaining"] <= a["remaining"]
+
+
+def test_quali_minute_samples_and_main(capsys):
+    _, _, text = replay_quali(samples=[1])
+    assert "min   1: clock 0:50 STOPPED HAM VER NOR LEC PIA HUL" in text
+    assert replay_mod.main(["--from-dir", str(QUALI), "--print", "--session", "q"]) == 0
+    assert "final (FINISHED, Q3" in capsys.readouterr().out
+
+
+def test_laps_needs_a_race_session():
+    with pytest.raises(SystemExit) as exc:
+        replay_mod.main(["--from-dir", str(QUALI), "--print", "--session", "Q", "--laps", "2"])
+    assert exc.value.code == 2
+
+
+def test_api_path_maps_sessions(monkeypatch):
+    import fastf1
+
+    seen = []
+
+    class Session:
+        api_path = "/static/x/"
+
+    monkeypatch.setattr(fastf1, "get_session", lambda year, event, kind: seen.append((year, event, kind)) or Session())
+    for session, kind in (("FP1", "FP1"), ("SQ", "SQ"), ("SPRINT", "S"), ("Q", "Q"), ("RACE", "R")):
+        assert replay_mod.api_path(2026, "Mexico", session) == "/static/x/"
+        assert seen[-1] == (2026, "Mexico", kind)
+    replay_mod.api_path(2026, "19")
+    assert seen[-1] == (2026, 19, "R")
+
+
+def test_download_skips_missing_optional_topics():
+    class Resp:
+        def __init__(self, url):
+            missing = "LapCount" in url or "ExtrapolatedClock" in url
+            self.status_code = 404 if missing else 200
+            self.content = b""
+
+    streams = replay_mod.download("/static/q/", lambda urls: Resp(urls[0]))
+    assert "LapCount" not in streams and "ExtrapolatedClock" not in streams
+    assert streams["TimingData"] == []
+
+    class Down:
+        def __init__(self, url):
+            self.status_code = 404 if "TimingData" in url else 200
+            self.content = b""
+
+    with pytest.raises(RuntimeError, match="TimingData"):
+        replay_mod.download("/static/q/", lambda urls: Down(urls[0]))

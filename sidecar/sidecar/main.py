@@ -1,21 +1,23 @@
-"""Sidecar entry point: wait for a Grand Prix window, follow the live feed, push.
+"""Sidecar entry point: wait for a session window, follow the live feed, push.
 
 Loop (`Sidecar.step`, re-run after the delay it returns, at most 30 s so the
 healthcheck heartbeat stays fresh):
 
-1. Load the calendar (Jolpica, cached) and pick the race whose window is
-   open or next (`schedule.py`). Races already followed to FINISHED are
-   skipped.
+1. Load the calendar (Jolpica, cached) and pick the session (FP1 ... RACE)
+   whose window is open or next (`schedule.py`). Sessions already followed
+   to FINISHED are skipped (by key `season-round-TYPE`).
 2. From 30 min before the window: pre-warm the F1 token (sign in if it is
    missing, expired, or would expire before the window closes).
 3. In the window: sign in if needed, connect to the live feed and keep a
-   `RaceState`; push the snapshot on every change (checked every second)
-   and at least every 10 s as a heartbeat, but only while feed messages
-   arrive (no message for 30 s: no heartbeat, so the board shows NO DATA
-   after 60 s). A dropped or silent (60 s) connection is reopened after
-   10 s, keeping the state. After FINISHED the snapshot is pushed for
-   5 more minutes (late finishers settle the classification), then the
-   feed is left. The window's hard cap (start + 4 h) always ends it.
+   `RaceState` of that session type; push the snapshot on every change
+   (checked every second) and at least every 10 s as a heartbeat, but only
+   while feed messages arrive (no message for 30 s: no heartbeat, so the
+   board shows NO DATA after 60 s). A running session clock alone is not a
+   change (the plugin counts it down; the heartbeat carries it). A dropped
+   or silent (60 s) connection is reopened after 10 s, keeping the state.
+   After FINISHED (in qualifying: after Q3) the snapshot is pushed for 5
+   more minutes (late finishers settle the classification), then the feed
+   is left. The window's hard cap always ends it.
 4. A failed sign-in is logged (never the credentials) and retried every
    5 minutes while the window is open.
 
@@ -39,7 +41,7 @@ import requests
 from . import live
 from .config import ConfigError, load_config
 from .notify import Notifier
-from .schedule import Race, Schedule, ScheduleError
+from .schedule import Schedule, ScheduleError, Session
 from .state import RaceState
 
 log = logging.getLogger("sidecar")
@@ -57,8 +59,19 @@ SCHEDULE_RETRY_S = 5 * 60.0
 IDLE_S = 3600.0
 
 
+def change_key(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """*snapshot* without a running clock's `remaining`: what counts as a change."""
+    clock = snapshot.get("clock")
+    if isinstance(clock, dict) and clock.get("running"):
+        return {**snapshot, "clock": {k: v for k, v in clock.items() if k != "remaining"}}
+    return snapshot
+
+
 class Pusher:
-    """Pushes a snapshot when it changed, or as a heartbeat."""
+    """Pushes a snapshot when it changed, or as a heartbeat.
+
+    A running clock's countdown is not a change; the heartbeat carries it.
+    """
 
     def __init__(self, notifier: Notifier) -> None:
         self._notifier = notifier
@@ -69,10 +82,11 @@ class Pusher:
     def tick(self, snapshot: dict[str, Any], clock: float) -> bool:
         """Push if due. Returns True when a push was attempted."""
         wait = HEARTBEAT_S if self._last_ok else PUSH_RETRY_S
-        if snapshot == self._last and clock - self._last_attempt < wait:
+        key = change_key(snapshot)
+        if key == self._last and clock - self._last_attempt < wait:
             return False
         self._last_ok = self._notifier.push(snapshot)
-        self._last = snapshot
+        self._last = key
         self._last_attempt = clock
         return True
 
@@ -116,12 +130,12 @@ class Sidecar:
 
     # ── sign-in ──────────────────────────────────────────────────────────
 
-    def _signed_in(self, race: Race) -> bool:
+    def _signed_in(self, race: Session) -> bool:
         """A token valid until the window closes; False (logged) on failure."""
         try:
             expiry = self.sign_in()
             if expiry < race.closes.timestamp():
-                log.info("f1 token expires before the race window closes, signing in again")
+                log.info("f1 token expires before the session window closes, signing in again")
                 self.sign_in(force=True)
             return True
         except live.AuthError as exc:
@@ -141,7 +155,10 @@ class Sidecar:
         if race is None:
             return IDLE_S
         if race.key != self._announced:
-            log.info("next race: %s %s, window %s - %s", race.key, race.name, race.opens, race.closes)
+            log.info(
+                "next session: %s %s %s, window %s - %s",
+                race.key, race.name, race.type, race.opens, race.closes,
+            )
             self._announced = race.key
 
         if now < race.prewarm_at:
@@ -155,7 +172,7 @@ class Sidecar:
 
         # Window open.
         if race.key != self.state_key:
-            self.state, self.state_key = RaceState(), race.key
+            self.state, self.state_key = RaceState(race.type), race.key
         clock = self.clock()
         retry_at = self._signin_retry.get(race.key, float("-inf"))
         if clock < retry_at:
@@ -167,7 +184,7 @@ class Sidecar:
         outcome = self.follow(race)
         if outcome in ("finished", "cap"):
             self.done.add(race.key)
-            log.info("race %s done (%s)", race.key, outcome)
+            log.info("session %s done (%s)", race.key, outcome)
             return 0.0
         return RECONNECT_S
 
@@ -181,7 +198,7 @@ class Sidecar:
         with self.lock:
             self.state.apply(topic, data)
 
-    def follow(self, race: Race) -> str:
+    def follow(self, race: Session) -> str:
         """Follow the feed until finished, cap, or a dropped connection."""
         try:
             client = self.connect_feed(self._on_topic)
@@ -199,17 +216,18 @@ class Sidecar:
                 touch(self.heartbeat_file)
                 clock = self.clock()
                 with self.lock:
-                    snapshot = self.state.snapshot()
+                    snapshot = self.state.snapshot(self.now())
                     finished = self.state.finished
                 silent_for = clock - client.last_message_at
                 if snapshot is not None and silent_for < FEED_SILENT_S:
                     pusher.tick(snapshot, clock)
-                if finished:
-                    if grace_until is None:
-                        log.info("live: %s finished", race.key)
-                        grace_until = clock + FINISH_GRACE_S
-                    elif clock >= grace_until:
-                        return "finished"
+                if not finished:
+                    grace_until = None  # never armed by a passing state
+                elif grace_until is None:
+                    log.info("live: %s finished", race.key)
+                    grace_until = clock + FINISH_GRACE_S
+                elif clock >= grace_until:
+                    return "finished"
                 if self.now() >= race.closes:
                     return "cap"
                 if not client.connected or silent_for > FEED_DROPPED_S:

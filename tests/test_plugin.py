@@ -20,6 +20,8 @@ def all_values(data):
     yield data["race_status"]
     yield data["next_race"]
     yield data["next_race_time"]
+    yield data["next_session"]
+    yield data["next_session_time"]
     for row in data["standings"]:
         yield from row.values()
 
@@ -55,15 +57,20 @@ def test_manifest_install_check_passes(manifest):
 
 def test_manifest_declares_variables(manifest):
     assert manifest["id"] == "f1"
-    assert manifest["version"] == "0.2.0"
+    assert manifest["version"] == "0.3.0"
     assert set(manifest["settings_schema"]["properties"]) == {"enabled", "top_n"}
     assert set(manifest["variables"]["simple"]) == {
         "race_status",
+        "session",
+        "session_part",
+        "time_left",
         "lap",
         "total_laps",
         "track_status",
         "next_race",
         "next_race_time",
+        "next_session",
+        "next_session_time",
     }
     array = manifest["variables"]["arrays"]["standings"]
     assert array["label_field"] == "code"

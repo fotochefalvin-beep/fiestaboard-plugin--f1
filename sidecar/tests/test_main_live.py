@@ -10,10 +10,10 @@ import pytest
 from sidecar import live
 from sidecar import main as main_mod
 from sidecar.main import FINISH_GRACE_S, HEARTBEAT_S, Pusher, Sidecar
-from sidecar.schedule import Race, ScheduleError
+from sidecar.schedule import ScheduleError, Session, parse_races
 
 START = datetime(2026, 11, 8, 17, tzinfo=UTC)
-RACE = Race("2026", "20", "Brazilian Grand Prix", START)
+RACE = Session("2026", "20", "RACE", "Brazilian Grand Prix", START)
 
 
 class FakeNotifier:
@@ -153,6 +153,31 @@ def test_pusher_on_change_and_heartbeat():
     assert HEARTBEAT_S <= 15
 
 
+def test_pusher_ignores_a_running_clock_but_not_a_stopped_one():
+    notifier = FakeNotifier()
+    pusher = Pusher(notifier)
+    snap = {"lap": "", "clock": {"remaining": 900, "running": True}}
+    assert pusher.tick(snap, 0.0)
+    # Counting down alone: no push until the heartbeat, which carries it.
+    assert not pusher.tick({**snap, "clock": {"remaining": 899, "running": True}}, 1.0)
+    assert not pusher.tick({**snap, "clock": {"remaining": 891, "running": True}}, 9.0)
+    assert pusher.tick({**snap, "clock": {"remaining": 890, "running": True}}, HEARTBEAT_S)
+    assert notifier.pushed[-1]["clock"]["remaining"] == 890
+    # The clock stops (red flag): a change, pushed at once.
+    assert pusher.tick({**snap, "clock": {"remaining": 889, "running": False}}, 11.0)
+    # A stopped clock that is reset (next part's length) is a change too.
+    assert pusher.tick({**snap, "clock": {"remaining": 720, "running": False}}, 12.0)
+    # Other changes still push at once while it runs.
+    assert pusher.tick({"lap": "", "clock": {"remaining": 700, "running": True}}, 13.0)
+    assert pusher.tick({"lap": "x", "clock": {"remaining": 699, "running": True}}, 14.0)
+
+
+def test_change_key():
+    assert main_mod.change_key({"a": 1}) == {"a": 1}
+    assert main_mod.change_key({"clock": {"remaining": 5, "running": True}}) == {"clock": {"running": True}}
+    assert main_mod.change_key({"clock": {"remaining": 5, "running": False}})["clock"]["remaining"] == 5
+
+
 def test_pusher_retries_failed_push_sooner():
     notifier = FakeNotifier(ok=False)
     pusher = Pusher(notifier)
@@ -247,7 +272,7 @@ def test_follows_race_until_finished_plus_grace():
     notifier = FakeNotifier()
     sidecar, clients, _ = make_sidecar(t, notifier=notifier)
     assert sidecar.step() == 0.0
-    assert "2026-20" in sidecar.done
+    assert "2026-20-RACE" in sidecar.done
     assert clients[0].closed
     sessions = [p["session"] for p in notifier.pushed]
     assert sessions[0] == "LIVE" and sessions[-1] == "FINISHED"
@@ -274,7 +299,114 @@ def test_hard_cap_ends_following():
 
     sidecar, clients, _ = make_sidecar(t, connect=connect)
     assert sidecar.step() == 0.0
-    assert "2026-20" in sidecar.done
+    assert "2026-20-RACE" in sidecar.done
+
+
+def quali_script():
+    """Q1 and Q2 each send Finished; only Q3's Finished ends the session."""
+    drivers = {"1": {"Tla": "VER", "LastName": "Verstappen", "Line": 1}, "4": {"Tla": "NOR", "LastName": "Norris", "Line": 2}}
+    return {
+        0: [
+            ("DriverList", drivers),
+            ("TimingData", {"SessionPart": 1, "Lines": {}}),
+            ("SessionStatus", {"Status": "Started"}),
+            ("ExtrapolatedClock", {"Utc": "2026-11-07T18:00:00Z", "Remaining": "00:18:00", "Extrapolating": True}),
+        ],
+        20: [("SessionStatus", {"Status": "Finished"})],
+        30: [("TimingData", {"SessionPart": 2, "Lines": {"4": {"KnockedOut": True}}})],
+        33: [("SessionStatus", {"Status": "Inactive"})],
+        40: [("SessionStatus", {"Status": "Started"})],
+        60: [("SessionStatus", {"Status": "Finished"})],
+        70: [("TimingData", {"SessionPart": 3, "Lines": {}})],
+        74: [("SessionStatus", {"Status": "Inactive"})],
+        80: [("SessionStatus", {"Status": "Started"})],
+        100: [("SessionStatus", {"Status": "Finished"})],
+    }
+
+
+def test_qualifying_stays_connected_until_q3_ends():
+    quali = Session("2026", "20", "Q", "Brazilian Grand Prix", START - timedelta(days=1))
+    t = Time(quali.opens)
+    notifier = FakeNotifier()
+
+    def connect(on_topic):
+        client = FakeClient(on_topic, t, quali_script())
+        clients.append(client)
+        return client
+
+    sidecar, clients, _ = make_sidecar(t, notifier=notifier, schedule=FakeSchedule([quali]), connect=connect)
+    assert sidecar.step() == 0.0
+    assert len(clients) == 1  # one connection for Q1, Q2 and Q3
+    assert "2026-20-Q" in sidecar.done
+    parts, sessions = [], []
+    for snap in notifier.pushed:
+        assert snap["session_type"] == "Q"
+        if not parts or parts[-1] != snap["session_part"]:
+            parts.append(snap["session_part"])
+        if not sessions or sessions[-1] != snap["session"]:
+            sessions.append(snap["session"])
+    assert parts == ["Q1", "Q2", "Q3"]
+    assert sessions == ["LIVE", "FINISHED"]  # never FINISHED after Q1 or Q2
+    # Left 5 min after Q3's Finished (tick 100), not after Q1's (tick 20).
+    assert t.mono - 1000.0 == pytest.approx(100 + FINISH_GRACE_S, abs=2)
+    assert notifier.pushed[-1]["grid"][1]["status"] == "KNOCKED OUT"
+    assert "clock" in notifier.pushed[0]
+
+
+def test_grace_is_disarmed_when_finished_turns_back():
+    t = Time(RACE.opens)
+
+    class State:
+        def __init__(self):
+            self.calls = 0
+
+        @property
+        def finished(self):
+            self.calls += 1
+            return self.calls < 3  # finished for two ticks only
+
+        def snapshot(self, now=None):
+            return None
+
+        def apply(self, topic, data):
+            pass
+
+    sidecar, _, _ = make_sidecar(t)
+    sidecar.state, sidecar.state_key = State(), RACE.key
+    t.wall = RACE.closes - timedelta(seconds=FINISH_GRACE_S + 30)
+    assert sidecar.follow(RACE) == "cap"  # the early grace never fired
+
+
+@pytest.mark.parametrize(
+    "weekend, expected",
+    [
+        ("BRAZIL_NORMAL", ["FP1", "FP2", "FP3", "Q", "RACE"]),
+        ("SPRINT_WEEKEND", ["FP1", "SQ", "SPRINT", "Q", "RACE"]),
+    ],
+)
+def test_weekend_opens_one_window_per_session_in_order(weekend, expected):
+    """Mocked clock over Brazil 2026 and a sprint weekend: one window each."""
+    import test_config_notify_schedule as calendar
+
+    sessions = parse_races(calendar.races_body(getattr(calendar, weekend)))
+    t = Time(sessions[0].prewarm_at - timedelta(hours=1))
+    opened = []
+
+    def connect(on_topic):
+        session = sidecar.schedule.current(t.now(), sidecar.done)
+        assert session.in_window(t.now())
+        opened.append((session.type, sidecar.state.session_type))
+        client = FakeClient(on_topic, t, race_script())
+        clients.append(client)
+        return client
+
+    sidecar, clients, _ = make_sidecar(t, schedule=FakeSchedule(sessions), connect=connect)
+    end = sessions[-1].closes + timedelta(hours=1)
+    while t.now() < end:
+        sidecar.sleep(min(max(sidecar.step(), 0.0), main_mod.MAX_SLEEP_S))
+    assert [kind for kind, _ in opened] == expected
+    assert [state for _, state in opened] == expected
+    assert sidecar.done == {s.key for s in sessions}
 
 
 def test_silent_feed_stops_heartbeats_then_reconnects_keeping_state():
@@ -344,9 +476,10 @@ def test_new_race_gets_fresh_state():
     t = Time(RACE.opens)
     sidecar, _, _ = make_sidecar(t)
     sidecar.state.apply("SessionStatus", {"Status": "Finished"})
-    sidecar.state_key = "2026-19"
+    sidecar.state_key = "2026-19-RACE"
     sidecar.step()
-    assert sidecar.state_key == "2026-20"
+    assert sidecar.state_key == "2026-20-RACE"
+    assert sidecar.state.session_type == "RACE"
 
 
 # ── AC: secrets files + expired token -> headless sign-in and connect ───────
@@ -392,7 +525,7 @@ def test_expired_token_signs_in_headless_from_secret_files(tmp_path, monkeypatch
     live.configure_auth(config.f1_username, config.f1_password)
     t = Time(RACE.opens)
     t.wall = datetime.now(UTC) - (START - RACE.opens)  # window opens "now"
-    race = Race("2026", "20", "Brazil", t.wall + timedelta(minutes=15))
+    race = Session("2026", "20", "RACE", "Brazil", t.wall + timedelta(minutes=15))
     connected = []
 
     def connect(on_topic):

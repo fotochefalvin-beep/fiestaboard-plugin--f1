@@ -89,12 +89,22 @@ def standings_body(rows):
     return {"MRData": {"StandingsTable": {"season": "2026", "StandingsLists": lists}}}
 
 
-def next_body(race_name="Brazilian Grand Prix", date="2026-11-08", time="17:00:00Z"):
+# Brazil 2026 as Jolpica lists it (UTC): a normal weekend.
+BRAZIL_SESSIONS = {
+    "FirstPractice": {"date": "2026-11-06", "time": "15:30:00Z"},
+    "SecondPractice": {"date": "2026-11-06", "time": "19:00:00Z"},
+    "ThirdPractice": {"date": "2026-11-07", "time": "14:30:00Z"},
+    "Qualifying": {"date": "2026-11-07", "time": "18:00:00Z"},
+}
+
+
+def next_body(race_name="Brazilian Grand Prix", date="2026-11-08", time="17:00:00Z", sessions=None):
     if race_name is None:
         return {"MRData": {"RaceTable": {"season": "2026", "Races": []}}}
     race = {"season": "2026", "round": "20", "raceName": race_name, "date": date}
     if time is not None:
         race["time"] = time
+    race.update(BRAZIL_SESSIONS if sessions is None else sessions)
     return {"MRData": {"RaceTable": {"season": "2026", "round": "20", "Races": [race]}}}
 
 

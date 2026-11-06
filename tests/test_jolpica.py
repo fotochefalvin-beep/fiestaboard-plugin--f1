@@ -59,11 +59,49 @@ def test_driver_standings_bad_shape(jolpica, body):
 def test_next_race_parsed(jolpica):
     client = client_for(jolpica, {NEXT: FakeResponse(200, next_body())})
     race = client.next_race()
+    utc = timezone.utc
     assert race == {
         "race_name": "Brazilian Grand Prix",
-        "start": datetime(2026, 11, 8, 17, 0, tzinfo=timezone.utc),
+        "start": datetime(2026, 11, 8, 17, 0, tzinfo=utc),
         "has_time": True,
+        "sessions": [
+            ("FP1", datetime(2026, 11, 6, 15, 30, tzinfo=utc), True),
+            ("FP2", datetime(2026, 11, 6, 19, 0, tzinfo=utc), True),
+            ("FP3", datetime(2026, 11, 7, 14, 30, tzinfo=utc), True),
+            ("Q", datetime(2026, 11, 7, 18, 0, tzinfo=utc), True),
+            ("RACE", datetime(2026, 11, 8, 17, 0, tzinfo=utc), True),
+        ],
     }
+
+
+def test_next_race_sprint_weekend_sessions(jolpica):
+    sessions = {
+        "FirstPractice": {"date": "2026-11-06", "time": "14:30:00Z"},
+        "SprintQualifying": {"date": "2026-11-06", "time": "18:30:00Z"},
+        "SprintShootout": {"date": "2026-11-06", "time": "09:00:00Z"},  # SprintQualifying wins
+        "Sprint": {"date": "2026-11-07", "time": "14:00:00Z"},
+        "Qualifying": {"date": "2026-11-07"},  # no time
+    }
+    client = client_for(jolpica, {NEXT: FakeResponse(200, next_body(sessions=sessions))})
+    got = [(kind, start.isoformat(), has_time) for kind, start, has_time in client.next_race()["sessions"]]
+    assert got == [
+        ("FP1", "2026-11-06T14:30:00+00:00", True),
+        ("SQ", "2026-11-06T18:30:00+00:00", True),
+        ("Q", "2026-11-07T00:00:00+00:00", False),
+        ("SPRINT", "2026-11-07T14:00:00+00:00", True),
+        ("RACE", "2026-11-08T17:00:00+00:00", True),
+    ]
+
+
+def test_next_race_shootout_and_bad_sessions_skipped(jolpica):
+    sessions = {
+        "SprintShootout": {"date": "2023-04-29", "time": "08:30:00Z"},
+        "Sprint": {"time": "13:30:00Z"},  # no date
+        "Qualifying": "soon",  # not an object
+        "FirstPractice": {"date": "bad", "time": "x"},
+    }
+    client = client_for(jolpica, {NEXT: FakeResponse(200, next_body(sessions=sessions))})
+    assert [kind for kind, _, _ in client.next_race()["sessions"]] == ["SQ", "RACE"]
 
 
 def test_next_race_offset_time_and_no_time(jolpica):
