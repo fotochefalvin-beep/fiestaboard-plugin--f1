@@ -257,6 +257,11 @@ def format_clock(seconds: int) -> str:
     return f"{minutes}:{rest:02d}"
 
 
+def fastest_lap(grid: List[Dict[str, str]]) -> str:
+    """P1's best lap: in practice and qualifying, the session's fastest lap."""
+    return grid[0].get("best", "") if grid else ""
+
+
 def top_codes(grid: List[Dict[str, str]], n: int) -> List[str]:
     """The driver codes of P1..N, the comparison key for publishing."""
     return [row.get("code", "") for row in grid[:n]]
@@ -458,6 +463,8 @@ class F1Plugin(PluginBase):
                 # A new qualifying part: the old part's times must not stay.
                 or snapshot["session_part"] != self._live["session_part"]
                 or top_codes(snapshot["grid"], n) != top_codes(self._published_grid, n)
+                # Practice / qualifying: a new fastest lap (race types have no best).
+                or fastest_lap(snapshot["grid"]) != fastest_lap(self._published_grid)
             ):
                 self._published_grid = snapshot["grid"]
 

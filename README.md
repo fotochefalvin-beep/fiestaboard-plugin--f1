@@ -62,9 +62,11 @@ Between sessions, e.g. `{{f1.next_session}} {{f1.next_session_time}}` ->
 * **Enabled**
 * **Top N** (1-20, default 3): the live `grid` on the board is replaced when
   the order of the first N drivers changes (an overtake, a pit stop
-  shuffle; in practice and qualifying a faster lap only when it changes
-  that order), and on the first push of a session, of each qualifying part
-  and on every FINISHED push. Changes only below P_N don't touch it; `lap`,
+  shuffle), and on the first push of a session, of each qualifying part
+  and on every FINISHED push. In practice and qualifying it is also
+  replaced whenever the fastest lap (P1's best) changes, so P1's time and
+  everyone's gap to it are current; a faster lap below P1 that keeps the
+  order doesn't touch it. Changes only below P_N don't touch it; `lap`,
   `total_laps`, `time_left`, `track_status` and `race_status` are always
   current. FiestaBoard sends at
   most one board update per 15 s, so two swaps in quick succession end with

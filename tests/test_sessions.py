@@ -84,11 +84,45 @@ def test_new_quali_part_republishes_grid_with_same_top_n(plugin, clock):
     assert data["session_part"] == "Q2"
     assert data["grid"][0]["best"] == ""
     assert data["grid"] == q2["grid"]
-    # Within the part, the top-N rule applies again.
+    # Within the part, a P2 lap that keeps the order is not published.
     q2_later = session_push(part="Q2")
-    q2_later["grid"][0]["best"] = "1:16.900"
+    q2_later["grid"][1]["best"] = "1:17.100"
     push(plugin, q2_later)
-    assert plugin.fetch_data().data["grid"][0]["best"] == ""
+    assert plugin.fetch_data().data["grid"][1]["best"] == ""
+
+
+@pytest.mark.parametrize("kind", ["FP1", "FP2", "FP3", "SQ", "Q"])
+def test_new_fastest_lap_republishes_grid_with_same_top_n(plugin, clock, kind):
+    """P1 improves (or sets the first time) without an order change: published."""
+    part = {"SQ": "SQ1", "Q": "Q1"}.get(kind)
+    push(plugin, session_push(kind, part=part))
+    first = session_push(kind, part=part)
+    first["grid"][0]["best"] = "1:17.341"
+    first["grid"][1].update(best="1:17.500", gap="+0.159")
+    push(plugin, first)
+    assert plugin.fetch_data().data["grid"] == first["grid"]
+    clock.advance(30)
+    faster = session_push(kind, part=part)
+    faster["grid"][0]["best"] = "1:16.900"
+    faster["grid"][1].update(best="1:17.500", gap="+0.600")
+    push(plugin, faster)
+    data = plugin.fetch_data().data
+    assert data["grid"][0]["best"] == "1:16.900"
+    assert data["grid"][1]["gap"] == "+0.600"
+    # The same fastest lap again, P2 improving below it: not published.
+    p2 = session_push(kind, part=part)
+    p2["grid"][0]["best"] = "1:16.900"
+    p2["grid"][1].update(best="1:17.000", gap="+0.100")
+    push(plugin, p2)
+    assert plugin.fetch_data().data["grid"][1]["gap"] == "+0.600"
+
+
+def test_race_gap_changes_alone_do_not_republish(plugin):
+    push(plugin, session_push("RACE"))
+    later = session_push("RACE")
+    later["grid"][1]["gap"] = "+9.9"
+    push(plugin, later)
+    assert plugin.fetch_data().data["grid"][1]["gap"] != "+9.9"
 
 
 def test_session_shown_during_no_data_and_finished(plugin, clock):

@@ -20,7 +20,7 @@
       "top_n": {
         "type": "integer",
         "title": "Top N",
-        "description": "The live grid on the board is refreshed when the order of the first N drivers changes (1-20). Lap, time left and track status always update.",
+        "description": "The live grid on the board is refreshed when the order of the first N drivers changes (1-20), and in practice and qualifying also when the fastest lap changes. Lap, time left and track status always update.",
         "default": 3,
         "minimum": 1,
         "maximum": 20
